@@ -9,6 +9,7 @@ const state = {
   query: "",
   covers: new Map(),
   busy: false,
+  update: null,
 };
 
 const BADGE_TEXT = {
@@ -314,19 +315,189 @@ async function setEnabled(appId, on) {
   } finally {
     state.busy = false;
     await load();
+// Check for a newer CachyPlay in the background; never blocks anything.
+checkUpdates(true);
   }
 }
 
 async function saveReport(appId) {
   const progress = toast("Saving bug report…");
   try {
-    const r = await invoke("create_report", { appId });
+    const r = await invoke("create_report", { appId: appId || null });
     toast(`Saved ${r.name}`, "success", { label: "Show in folder", run: () => invoke("open_folder", { path: r.folder }) });
   } catch (e) {
     toast(`Couldn't save the bug report: ${e}`, "error");
   } finally {
     progress.remove();
   }
+  if ($("reports").open) renderReports();
+}
+
+/* ---------- bug reports screen ---------- */
+async function renderReports() {
+  const list = $("report-list");
+  let reports = [];
+  try {
+    reports = await invoke("saved_reports");
+  } catch (e) {
+    list.replaceChildren(h("li", { class: "empty-row" }, String(e)));
+    return;
+  }
+  if (!reports.length) {
+    list.replaceChildren(h("li", { class: "empty-row" }, "No bug reports saved yet. They're saved to your Desktop."));
+    return;
+  }
+  list.replaceChildren(...reports.map((r) => h("li", {},
+    h("div", { class: "what" },
+      h("strong", {}, r.game || (r.app_id ? `Game ${r.app_id}` : "General report")),
+      h("span", {}, `Saved ${when(r.created.replace(" ", "T"))}, ${r.size_kb} KB`)),
+    h("button", { type: "button", class: "secondary", onclick: () => invoke("open_folder", { path: r.path }) }, "Show in folder"))));
+}
+
+function openReports() {
+  renderReports();
+  $("reports").showModal();
+}
+
+/* ---------- updates ---------- */
+const CHANNEL_NAME = { stable: "Stable", beta: "Beta" };
+
+async function checkUpdates(silent) {
+  const line = $("update-line");
+  if (!silent) {
+    line.className = "status-line";
+    line.textContent = "Checking for updates…";
+  }
+  try {
+    state.update = await invoke("update_status");
+  } catch (e) {
+    state.update = { error: String(e) };
+  }
+  renderUpdate();
+}
+
+function renderUpdate() {
+  const u = state.update;
+  const pill = $("update-pill");
+  const line = $("update-line");
+  if (!u) return;
+  for (const r of document.querySelectorAll('input[name="channel"]')) r.checked = r.value === u.channel;
+  $("roll-back").hidden = !u.can_roll_back;
+  if (u.error) {
+    pill.hidden = true;
+    line.className = "status-line bad";
+    line.textContent = u.error;
+    return;
+  }
+  if (u.available && u.latest) {
+    pill.hidden = false;
+    pill.textContent = `Update available: ${u.latest.tag}`;
+    line.className = "status-line new";
+    line.textContent = `${u.latest.tag} is available. You have v${u.current}.`;
+  } else {
+    pill.hidden = true;
+    line.className = "status-line good";
+    line.textContent = `You have the newest ${CHANNEL_NAME[u.channel]} version (v${u.current}).`;
+  }
+}
+
+function openUpdateDialog() {
+  const u = state.update;
+  if (!u || !u.latest) return;
+  $("update-title").textContent = `CachyPlay ${u.latest.tag} is available`;
+  $("update-notes").replaceChildren(...notesView(u.latest.notes || ""));
+  const btn = $("update-now");
+  btn.disabled = false;
+  btn.textContent = "Update now";
+  btn.onclick = updateNow;
+  $("update-command").hidden = true;
+  btn.hidden = false;
+  if (u.kind === "package") {
+    $("update-sub").textContent = `You have v${u.current}. CachyPlay was installed from the AUR, so update it with your package manager:`;
+    $("update-command").hidden = false;
+    $("update-command-text").value = u.command;
+    btn.hidden = true;
+  } else if (u.kind === "notinstalled") {
+    $("update-sub").textContent = `You have v${u.current}, running from a download or build folder. Install CachyPlay first (button at the top), then update.`;
+    btn.hidden = true;
+  } else {
+    $("update-sub").textContent = `You have v${u.current}. The download is checked before it's installed, and your current version is kept so you can go back.`;
+  }
+  $("update-dialog").showModal();
+}
+
+/* Release notes are markdown from GitHub; show headings and bullets, everything as text. */
+function notesView(md) {
+  const out = [];
+  let list = null;
+  for (const raw of md.split(/\r?\n/)) {
+    const line = raw.trim();
+    const bullet = line.match(/^[-*]\s+(.*)/);
+    if (bullet) {
+      if (!list) out.push((list = h("ul")));
+      list.append(h("li", {}, bullet[1].replace(/\*\*/g, "")));
+      continue;
+    }
+    list = null;
+    if (!line) continue;
+    const head = line.match(/^#{1,6}\s+(.*)/);
+    out.push(head ? h("h4", {}, head[1]) : h("p", {}, line.replace(/\*\*/g, "")));
+  }
+  return out;
+}
+
+async function updateNow() {
+  const btn = $("update-now");
+  btn.disabled = true;
+  btn.textContent = "Updating…";
+  try {
+    const msg = await invoke("install_update");
+    toast(msg, "success");
+    $("update-title").textContent = `Updated to ${state.update.latest.tag}`;
+    $("update-sub").textContent = "Restart CachyPlay to start using the new version.";
+    state.update.available = false;
+    state.update.can_roll_back = true;
+    renderUpdate();
+    btn.disabled = false;
+    btn.textContent = "Restart CachyPlay";
+    btn.onclick = () => invoke("restart_app");
+  } catch (e) {
+    toast(`Update failed: ${e}`, "error");
+    btn.disabled = false;
+    btn.textContent = "Try again";
+  }
+}
+
+async function copyCommand() {
+  const input = $("update-command-text");
+  try {
+    await navigator.clipboard.writeText(input.value);
+    toast("Copied. Paste it into a terminal.", "success");
+  } catch {
+    input.select();
+    toast("Press Ctrl+C to copy the selected command.");
+  }
+}
+
+async function setChannel(channel) {
+  try {
+    await invoke("set_channel", { channel });
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  checkUpdates(false);
+}
+
+async function rollBack() {
+  const ok = await confirmDialog("Go back to the previous version?", "CachyPlay will switch back to the version you had before the last update.", "Go back");
+  if (!ok) return;
+  try {
+    const msg = await invoke("roll_back");
+    toast(msg, "success", { label: "Restart now", run: () => invoke("restart_app") });
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  checkUpdates(true);
 }
 
 async function installSelf() {
@@ -336,6 +507,8 @@ async function installSelf() {
     toast(String(e), "error");
   }
   load();
+// Check for a newer CachyPlay in the background; never blocks anything.
+checkUpdates(true);
 }
 
 function confirmDialog(title, text, okLabel) {
@@ -362,6 +535,8 @@ function openSettings() {
   $("uninstall").disabled = !!blocked;
   $("restore-all").title = blocked || "";
   $("uninstall").title = blocked || "";
+  renderUpdate();
+  if (!state.update) checkUpdates(false);
   $("settings").showModal();
 }
 
@@ -375,6 +550,8 @@ async function restoreAll() {
     toast(String(e), "error");
   }
   load();
+// Check for a newer CachyPlay in the background; never blocks anything.
+checkUpdates(true);
 }
 
 async function uninstall() {
@@ -391,6 +568,8 @@ async function uninstall() {
     toast(String(e), "error");
   }
   load();
+// Check for a newer CachyPlay in the background; never blocks anything.
+checkUpdates(true);
 }
 
 /* ---------- keyboard: arrow keys move across the grid (gamepad-ready later) ---------- */
@@ -411,6 +590,16 @@ function gridKeys(e) {
 /* ---------- wiring ---------- */
 $("refresh").addEventListener("click", load);
 $("open-settings").addEventListener("click", openSettings);
+$("open-reports").addEventListener("click", openReports);
+$("general-report").addEventListener("click", () => saveReport(null));
+$("open-issues").addEventListener("click", () => invoke("open_issue_page").catch((e) => toast(String(e), "error")));
+$("update-pill").addEventListener("click", openUpdateDialog);
+$("check-updates").addEventListener("click", () => checkUpdates(false));
+$("roll-back").addEventListener("click", rollBack);
+$("copy-command").addEventListener("click", copyCommand);
+for (const r of document.querySelectorAll('input[name="channel"]')) {
+  r.addEventListener("change", () => r.checked && setChannel(r.value));
+}
 $("restore-all").addEventListener("click", restoreAll);
 $("uninstall").addEventListener("click", uninstall);
 $("grid").addEventListener("keydown", gridKeys);
@@ -426,3 +615,5 @@ for (const b of document.querySelectorAll(".filters button")) {
 window.addEventListener("focus", load);
 
 load();
+// Check for a newer CachyPlay in the background; never blocks anything.
+checkUpdates(true);

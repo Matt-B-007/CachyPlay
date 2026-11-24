@@ -24,6 +24,61 @@ pub struct Report {
     pub files: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SavedReport {
+    pub name: String,
+    pub path: String,
+    /// AppID from the file name, if the report was for a game.
+    pub app_id: Option<String>,
+    /// "YYYY-MM-DD HH:MM:SS" from the file name.
+    pub created: String,
+    pub size_kb: u64,
+}
+
+/// Bug reports already saved in the report folder, newest first.
+pub fn saved_reports(paths: &Paths) -> Vec<SavedReport> {
+    let dir = paths.report_dir();
+    let mut out: Vec<SavedReport> = fs::read_dir(&dir)
+        .map(|rd| rd.flatten().collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stem = name
+                .strip_prefix("cachyplay-bug-")?
+                .strip_suffix(".zip")?
+                .to_string();
+            // stem: [<appid>-]YYYY-MM-DD_HH-MM-SS[-N]
+            // The day_hour part (with '_') sits at index 2 for general reports, 3 for game reports.
+            let parts: Vec<&str> = stem.split('-').collect();
+            let (app_id, rest) = match parts.iter().position(|p| p.contains('_'))? {
+                2 => (None, &parts[..]),
+                3 if parts[0].chars().all(|c| c.is_ascii_digit()) => {
+                    (Some(parts[0].to_string()), &parts[1..])
+                }
+                _ => return None,
+            };
+            if rest.len() < 5 {
+                return None;
+            }
+            let (day, hour) = rest[2].split_once('_')?;
+            let created = format!(
+                "{}-{}-{} {}:{}:{}",
+                rest[0], rest[1], day, hour, rest[3], rest[4]
+            );
+            Some(SavedReport {
+                path: e.path().display().to_string(),
+                size_kb: e.metadata().map(|m| m.len().div_ceil(1024)).unwrap_or(0),
+                name,
+                app_id,
+                created,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.created.cmp(&a.created));
+    out
+}
+
 /// File name for a report, using the time captured at the moment of the click.
 pub fn file_name(app_id: Option<&str>, at: &chrono::DateTime<chrono::Local>) -> String {
     let stamp = at.format("%Y-%m-%d_%H-%M-%S");
@@ -389,6 +444,20 @@ mod tests {
         let a = create(&f.paths(), Some(&ctx), Some(&game)).unwrap();
         let b = create(&f.paths(), Some(&ctx), Some(&game)).unwrap();
         assert_ne!(a.path, b.path, "two reports never share a name");
+        let general = create(&f.paths(), Some(&ctx), None).unwrap();
+        let saved = saved_reports(&f.paths());
+        assert_eq!(saved.len(), 3);
+        assert!(
+            saved
+                .iter()
+                .filter(|r| r.app_id.as_deref() == Some("1240440"))
+                .count()
+                == 2
+        );
+        assert!(saved
+            .iter()
+            .any(|r| r.app_id.is_none() && r.path == general.path.display().to_string()));
+        assert_eq!(saved[0].created.len(), 19, "{:?}", saved[0]);
         assert_eq!(a.path.parent().unwrap(), f.home().join("Desktop"));
         let mut z = zip::ZipArchive::new(fs::File::open(&a.path).unwrap()).unwrap();
         let names: Vec<String> = (0..z.len())

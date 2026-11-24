@@ -14,8 +14,10 @@
       <span class="version" id="version"></span>
     </div>
     <div class="topbar-right">
+      <button class="update-pill" id="update-pill" hidden></button>
       <span class="steam-chip" id="steam-chip" hidden></span>
       <button class="ghost" id="refresh" title="Check again">Refresh</button>
+      <button class="ghost" id="open-reports">Bug reports</button>
       <button class="ghost" id="open-settings">Settings</button>
     </div>
   </header>
@@ -54,6 +56,25 @@
       <dl class="facts" id="settings-facts"></dl>
 
       <section class="setting-block">
+        <h3>Updates</h3>
+        <div class="channels" role="radiogroup" aria-label="Update channel">
+          <label class="channel">
+            <input type="radio" name="channel" value="stable" />
+            <span><strong>Stable</strong><span>Finished releases. Recommended.</span></span>
+          </label>
+          <label class="channel">
+            <input type="radio" name="channel" value="beta" />
+            <span><strong>Beta</strong><span>New features sooner. Might have rough edges.</span></span>
+          </label>
+        </div>
+        <p id="update-line" class="status-line"></p>
+        <div class="row-actions">
+          <button type="button" class="secondary" id="check-updates">Check for updates</button>
+          <button type="button" class="secondary" id="roll-back" hidden>Go back to the previous version</button>
+        </div>
+      </section>
+
+      <section class="setting-block">
         <h3>Restore all games</h3>
         <p>Turns CachyPlay off for every game, on every Steam account, and puts their launch options back. Your own options stay.</p>
         <button type="button" class="secondary" id="restore-all">Restore all games</button>
@@ -66,6 +87,39 @@
         <button type="button" class="danger-btn" id="uninstall">Uninstall CachyPlay</button>
       </section>
 
+      <div class="dialog-actions">
+        <button class="secondary" value="close">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="update-dialog">
+    <form method="dialog" class="dialog-body">
+      <h2 id="update-title"></h2>
+      <p id="update-sub"></p>
+      <div class="notes" id="update-notes"></div>
+      <div id="update-command" class="command" hidden>
+        <input id="update-command-text" readonly aria-label="Update command" />
+        <button type="button" class="secondary" id="copy-command">Copy</button>
+      </div>
+      <div class="dialog-actions">
+        <button class="secondary" value="close">Not now</button>
+        <button type="button" class="primary" id="update-now">Update now</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="reports">
+    <form method="dialog" class="dialog-body">
+      <h2>Bug reports</h2>
+      <p>A bug report is a zip file with logs and system details that shows why a game or CachyPlay misbehaved. Your home folder, username, Steam IDs, Steam name, hostname and tokens are removed before it's saved.</p>
+      <div class="row-actions">
+        <button type="button" class="primary" id="general-report">Save a bug report</button>
+        <button type="button" class="secondary" id="open-issues">Report a problem on GitHub</button>
+      </div>
+      <p class="hint-small">For a problem with one game, open that game and use its "Save bug report" button instead: the report then includes that game's logs. On GitHub, attach the zip to your issue.</p>
+      <h3>Saved reports</h3>
+      <ul class="report-list" id="report-list"></ul>
       <div class="dialog-actions">
         <button class="secondary" value="close">Close</button>
       </div>

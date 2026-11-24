@@ -28,6 +28,8 @@ pub struct Account {
     pub account_id: String,
     pub persona: String,
     pub most_recent: bool,
+    /// Last login time from loginusers.vdf (0 if unknown).
+    pub timestamp: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -90,28 +92,67 @@ impl Steam {
                     .unwrap_or("")
                     .to_string(),
                 most_recent: u.get("MostRecent").and_then(|n| n.str()) == Some("1"),
+                timestamp: u
+                    .get("Timestamp")
+                    .and_then(|n| n.str())
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0),
             });
         }
         Ok(out)
     }
 
-    /// The account Steam last logged into, falling back to the only `userdata` folder.
+    /// Account folders under `userdata/` that hold a real config (skips `0`, Steam's anonymous folder).
+    pub fn account_dirs(&self) -> Vec<String> {
+        let mut out: Vec<String> = fs::read_dir(self.root.join("userdata"))
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.retain(|id| {
+            id != "0"
+                && id.chars().all(|c| c.is_ascii_digit())
+                && self.localconfig_path(id).is_file()
+        });
+        out.sort();
+        out
+    }
+
+    /// The account Steam last used. In order: the one marked MostRecent, the newest login
+    /// Timestamp, the only account folder, or the folder whose settings changed most recently.
     pub fn current_account(&self) -> Result<Account> {
         let accounts = self.accounts().unwrap_or_default();
-        if let Some(a) = accounts.iter().find(|a| a.most_recent) {
+        let dirs = self.account_dirs();
+        let has_dir = |a: &Account| dirs.contains(&a.account_id);
+        if let Some(a) = accounts.iter().find(|a| a.most_recent && has_dir(a)) {
             return Ok(a.clone());
         }
-        let dirs: Vec<_> = fs::read_dir(self.root.join("userdata"))
-            .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).collect())
-            .unwrap_or_default();
-        match dirs.as_slice() {
-            [one] => Ok(Account {
-                account_id: one.file_name().to_string_lossy().into_owned(),
-                persona: String::new(),
-                most_recent: true,
-            }),
-            [] => bail!("no Steam account found; log into Steam once first"),
-            _ => bail!("several Steam accounts found and none is marked as most recent; log into Steam once"),
+        if let Some(a) = accounts
+            .iter()
+            .filter(|a| a.timestamp > 0 && has_dir(a))
+            .max_by_key(|a| a.timestamp)
+        {
+            return Ok(a.clone());
+        }
+        let newest = dirs.iter().max_by_key(|id| {
+            fs::metadata(self.localconfig_path(id))
+                .and_then(|m| m.modified())
+                .ok()
+        });
+        match newest {
+            Some(id) => Ok(accounts
+                .iter()
+                .find(|a| &a.account_id == id)
+                .cloned()
+                .unwrap_or(Account {
+                    account_id: id.clone(),
+                    persona: String::new(),
+                    most_recent: true,
+                    timestamp: 0,
+                })),
+            None => bail!("No Steam account found. Open Steam and log in once, then try again."),
         }
     }
 
@@ -223,6 +264,15 @@ mod tests {
         let root = dir.path().join(".local/share/Steam");
         fs::create_dir_all(root.join("config")).unwrap();
         fs::create_dir_all(root.join("steamapps")).unwrap();
+        for id in ["10", "22202"] {
+            let c = root.join("userdata").join(id).join("config");
+            fs::create_dir_all(&c).unwrap();
+            fs::write(
+                c.join("localconfig.vdf"),
+                "\"UserLocalConfigStore\"\n{\n}\n",
+            )
+            .unwrap();
+        }
         fs::write(
             root.join("config/loginusers.vdf"),
             "\"users\"\n{\n\t\"76561197960265738\"\n\t{\n\t\t\"PersonaName\"\t\t\"a\"\n\t\t\"MostRecent\"\t\t\"0\"\n\t}\n\t\"76561197960287930\"\n\t{\n\t\t\"PersonaName\"\t\t\"b\"\n\t\t\"MostRecent\"\t\t\"1\"\n\t}\n}\n",
@@ -233,6 +283,51 @@ mod tests {
         let a = s.current_account().unwrap();
         assert_eq!(a.account_id, "22202");
         assert_eq!(a.persona, "b");
+    }
+
+    fn steam_with(users: &str, dirs: &[&str]) -> (tempfile::TempDir, Steam) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".local/share/Steam");
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::create_dir_all(root.join("steamapps")).unwrap();
+        fs::write(
+            root.join("config/loginusers.vdf"),
+            format!("\"users\"\n{{\n{users}}}\n"),
+        )
+        .unwrap();
+        for d in dirs {
+            let c = root.join("userdata").join(d).join("config");
+            fs::create_dir_all(&c).unwrap();
+            fs::write(
+                c.join("localconfig.vdf"),
+                "\"UserLocalConfigStore\"\n{\n}\n",
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let s = Steam::locate(dir.path()).unwrap();
+        (dir, s)
+    }
+
+    #[test]
+    fn several_accounts_without_most_recent_flag() {
+        // Matt's case: an anonymous "0" folder plus real accounts, no MostRecent marker.
+        let user = |id64: &str, ts: &str| {
+            format!("\t\"{id64}\"\n\t{{\n\t\t\"PersonaName\"\t\t\"p{ts}\"\n\t\t\"Timestamp\"\t\t\"{ts}\"\n\t}}\n")
+        };
+        let users = user("76561197960265738", "100") + &user("76561197960287930", "200");
+        let (_d, s) = steam_with(&users, &["0", "10", "22202"]);
+        assert_eq!(
+            s.current_account().unwrap().account_id,
+            "22202",
+            "newest timestamp wins"
+        );
+        // No timestamps at all: the most recently changed settings folder wins; "0" is ignored.
+        let (_d, s) = steam_with("", &["0", "22202", "10"]);
+        assert_eq!(s.account_dirs(), vec!["10", "22202"]);
+        assert_eq!(s.current_account().unwrap().account_id, "10");
+        let (_d, s) = steam_with("", &["0"]);
+        assert!(s.current_account().is_err());
     }
 
     #[test]

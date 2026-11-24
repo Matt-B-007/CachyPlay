@@ -85,7 +85,11 @@ fn copy_exe(from: &Path, to: &Path) -> Result<()> {
 pub fn remove_user_files(paths: &Paths, remove_backups: bool) -> Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
     let manifest: Manifest = read_json(&paths.install_manifest()).unwrap_or_default();
-    for f in manifest.files {
+    for f in manifest
+        .files
+        .into_iter()
+        .chain(crate::update::prev_files(paths))
+    {
         if fs::remove_file(&f).is_ok() {
             removed.push(f);
         }

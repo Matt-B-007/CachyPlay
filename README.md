@@ -25,8 +25,8 @@ paru -S cachyplay-beta   # beta channel (replaces the stable package)
 **From a downloaded release:**
 
 ```bash
-tar -xf cachyplay-v0.1.0-x86_64-linux.tar.zst
-cd cachyplay-v0.1.0-x86_64-linux
+tar -xf cachyplay-v0.1.0-beta.2-x86_64-linux.tar.zst
+cd cachyplay-v0.1.0-beta.2-x86_64-linux
 ./cachyplay-gui          # then press Install at the top, or run: ./cachyplay install
 ```
 
@@ -79,6 +79,21 @@ When the game starts, CachyPlay applies the game's fix file (environment variabl
 
 CachyPlay collects no telemetry. In later versions its only network requests are checking GitHub for fix-file and app updates. Bug reports stay on your machine until you choose to share them. Before a report is written, your home folder path, username, Steam IDs, Steam name, hostname and anything that looks like a token are removed from it.
 
+## Updates
+
+CachyPlay checks GitHub for a newer version when it starts, and never interrupts you. When one exists, a small **Update available** button appears at the top. Click it to read what's new, then **Update now**. Two clicks, then restart CachyPlay.
+
+- **Stable or Beta:** pick a channel in Settings → Updates. Beta gets new features sooner.
+- **Safe updates:** the download is checked against its SHA-256 checksum and test-run before anything is replaced. The previous version is kept, so **Go back to the previous version** in Settings undoes an update.
+- **AUR installs** are updated by pacman. The app shows the command (`paru -S cachyplay`, or `paru -S cachyplay-beta` for the beta channel).
+- From the terminal: `cachyplay update`, `cachyplay update --check`, `cachyplay channel beta`.
+
+While the GitHub repository is private, updates only work if the GitHub CLI (`gh`) is installed and signed in.
+
+## Bug reports
+
+Use **Save bug report** on a game to capture that game's logs, or the **Bug reports** button at the top for a general report. Reports are saved to your Desktop as `cachyplay-bug-…-YYYY-MM-DD_HH-MM-SS.zip`, and the Bug reports screen lists them. To get help, open an issue on GitHub and attach the zip. If a game closes early, CachyPlay shows a desktop notification.
+
 ## Uninstall
 
 ```bash
@@ -86,7 +101,15 @@ cachyplay uninstall            # restores every game first, then removes CachyPl
 sudo pacman -Rns cachyplay     # only if you installed from the AUR
 ```
 
-Save and config backups are kept unless you pass `--remove-backups`. Bug reports on your Desktop are never deleted.
+Save and config backups are kept unless you pass `--remove-backups`. Bug reports on your Desktop are never deleted. You can also uninstall from the app: Settings → Uninstall CachyPlay.
+
+To remove every trace by hand, close Steam, run `cachyplay uninstall` first (it puts your games back), then:
+
+```bash
+rm -f ~/.local/bin/cachyplay ~/.local/bin/cachyplay-gui
+rm -f ~/.local/share/applications/cachyplay.desktop ~/.local/share/icons/hicolor/scalable/apps/cachyplay.svg
+rm -rf ~/.local/share/cachyplay ~/.local/state/cachyplay ~/.cache/cachyplay ~/.config/cachyplay
+```
 
 ## Verify on a real system before release
 
@@ -109,6 +132,8 @@ cargo build --workspace --release             # target/release/cachyplay and cac
 | `crates/cachyplay-core` | All logic: Steam files, snapshots, fix files, launch wrapper, bug reports |
 | `crates/cachyplay` | Command-line tool and the launch wrapper Steam calls |
 | `crates/cachyplay-gui` | Desktop app (Tauri 2, plain HTML/CSS/JS in `ui/`) |
+
+**Releasing:** set `version` in `Cargo.toml` to exactly match the tag (tag `v0.1.0-beta.3` needs `version = "0.1.0-beta.3"`), then push the tag. The Release workflow refuses mismatches, because the app compares its own version with GitHub's releases.
 
 The desktop app is a separate program on purpose: the launch wrapper runs before every game, so it stays small and starts instantly without loading WebKit.
 

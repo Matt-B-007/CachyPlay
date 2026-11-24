@@ -6,7 +6,7 @@ use cachyplay_core::library::{self, GameDetail, Overview};
 use cachyplay_core::manage::{touched_accounts, Ctx, Outcome};
 use cachyplay_core::paths::Paths;
 use cachyplay_core::recipes::Facts;
-use cachyplay_core::{install, report};
+use cachyplay_core::{install, report, update};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -156,9 +156,16 @@ fn open_folder(path: String) -> CmdResult<()> {
 }
 
 fn restore_everything(p: &Paths) -> CmdResult<Vec<String>> {
-    let base = ctx(p)?;
+    let accounts = touched_accounts(p);
+    if accounts.is_empty() {
+        return Ok(vec![]); // nothing was ever changed; Steam isn't needed
+    }
+    let mut base = Ctx::for_restore(p.clone()).map_err(|e| format!("{e:#}"))?;
+    if let Some(pr) = std::env::var_os("CACHYPLAY_PROC_ROOT") {
+        base.proc_root = PathBuf::from(pr); // tests only
+    }
     let mut lines = Vec::new();
-    for account in touched_accounts(p) {
+    for account in accounts {
         let c = base.for_account(&account);
         for app in c.managed_apps() {
             let name = c
@@ -221,6 +228,87 @@ fn install_self() -> CmdResult<String> {
     ))
 }
 
+/* ---------- updates ---------- */
+
+#[tauri::command]
+async fn update_status() -> CmdResult<update::UpdateStatus> {
+    tauri::async_runtime::spawn_blocking(|| Ok(update::check(&paths()?)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn set_channel(channel: update::Channel) -> CmdResult<()> {
+    let p = paths()?;
+    let mut s = update::Settings::load(&p);
+    s.channel = channel;
+    s.save(&p).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn install_update() -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let p = paths()?;
+        let status = update::check(&p);
+        if let Some(e) = status.error {
+            return Err(e);
+        }
+        let release = status
+            .latest
+            .filter(|_| status.available)
+            .ok_or("You already have the newest version.")?;
+        update::install(&p, &release).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn roll_back() -> CmdResult<String> {
+    update::roll_back(&paths()?).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
+/* ---------- bug reports ---------- */
+
+#[derive(Serialize)]
+struct ReportEntry {
+    #[serde(flatten)]
+    report: report::SavedReport,
+    game: Option<String>,
+}
+
+#[tauri::command]
+fn saved_reports() -> CmdResult<Vec<ReportEntry>> {
+    let p = paths()?;
+    let games = ctx(&p).map(|c| c.steam.games()).unwrap_or_default();
+    Ok(report::saved_reports(&p)
+        .into_iter()
+        .map(|r| {
+            let game = r
+                .app_id
+                .as_ref()
+                .and_then(|id| games.iter().find(|g| &g.app_id == id))
+                .map(|g| g.name.clone());
+            ReportEntry { report: r, game }
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn open_issue_page() -> CmdResult<()> {
+    let url = format!("https://github.com/{}/issues/new/choose", update::REPO);
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Couldn't open the browser: {e}"))
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -232,7 +320,14 @@ fn main() {
             open_folder,
             restore_all,
             uninstall,
-            install_self
+            install_self,
+            update_status,
+            set_channel,
+            install_update,
+            roll_back,
+            restart_app,
+            saved_reports,
+            open_issue_page
         ])
         .run(tauri::generate_context!())
         .expect("error while running CachyPlay");

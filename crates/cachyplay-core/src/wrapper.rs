@@ -142,6 +142,7 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
                     "cachyplay: the game closed after {:.0}s (exit {:?}). To get help, run: cachyplay report {id}",
                     runtime, code
                 );
+                notify_failure(paths, id, runtime);
             }
         }
     }));
@@ -151,6 +152,32 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
         (None, Some(s)) => 128 + s,
         _ => 1,
     }
+}
+
+/// Desktop notification so a failed launch doesn't go unnoticed. Best-effort and non-blocking.
+fn notify_failure(paths: &Paths, app_id: &str, runtime: f64) {
+    if std::env::var_os("CACHYPLAY_NO_NOTIFY").is_some() {
+        return;
+    }
+    let Some(notify) = sys::which("notify-send") else {
+        return;
+    };
+    let name = crate::steam::Steam::locate(&paths.home)
+        .ok()
+        .and_then(|s| s.find_game(app_id))
+        .map(|g| g.name)
+        .unwrap_or_else(|| format!("Game {app_id}"));
+    let _ = Command::new(notify)
+        .args([
+            "--app-name=CachyPlay",
+            "--icon=cachyplay",
+            &format!("{name} closed after {runtime:.0} seconds"),
+            "Open CachyPlay and save a bug report to see what went wrong.",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn plan_is_empty(p: &Plan) -> bool {

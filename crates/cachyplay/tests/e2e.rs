@@ -14,7 +14,8 @@ fn cmd(f: &FakeSteam, args: &[&str]) -> Command {
         .env_clear()
         .env("HOME", f.home())
         .env("PATH", "/usr/bin:/bin")
-        .env("CACHYPLAY_PROC_ROOT", f.home().join("proc"));
+        .env("CACHYPLAY_PROC_ROOT", f.home().join("proc"))
+        .env("CACHYPLAY_NO_NOTIFY", "1");
     c
 }
 
@@ -61,7 +62,8 @@ fn steam_launch(
         .env("HOME", f.home())
         .env("PATH", "/usr/bin:/bin")
         .env("OUT", &out)
-        .env("SteamAppId", "1240440");
+        .env("SteamAppId", "1240440")
+        .env("CACHYPLAY_NO_NOTIFY", "1");
     for (k, v) in extra_env {
         c.env(k, v);
     }
@@ -194,4 +196,22 @@ fn install_then_uninstall() {
         "games restored on uninstall"
     );
     assert!(!installed.exists(), "binary removed");
+}
+
+#[test]
+fn uninstall_works_without_steam_or_account() {
+    // Nothing was ever turned on, and Steam isn't even there: uninstall must still succeed.
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(BIN)
+        .args(["uninstall", "--yes"])
+        .env_clear()
+        .env("HOME", dir.path())
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use cachyplay_core::manage::{touched_accounts, Ctx, Outcome};
 use cachyplay_core::paths::{self, Paths};
-use cachyplay_core::{install, launch_options, recipes, report, steam, wrapper};
+use cachyplay_core::{install, launch_options, recipes, report, steam, update, wrapper};
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::io::Write;
@@ -58,6 +58,17 @@ enum Cmd {
         #[arg(long, short)]
         yes: bool,
     },
+    /// Check for a newer CachyPlay and install it
+    Update {
+        /// Only check, don't install
+        #[arg(long)]
+        check: bool,
+        /// Go back to the version installed before the last update
+        #[arg(long, conflicts_with = "check")]
+        roll_back: bool,
+    },
+    /// Show or change the update channel: stable or beta
+    Channel { channel: Option<String> },
     /// Launch wrapper used by Steam: cachyplay run -- %command%
     #[command(hide = true)]
     Run {
@@ -303,6 +314,53 @@ fn real_main() -> Result<ExitCode> {
                 println!("\nCachyPlay has been removed.");
             }
         }
+        Cmd::Update { check, roll_back } => {
+            if roll_back {
+                println!("{}", update::roll_back(&paths)?);
+                return Ok(ExitCode::SUCCESS);
+            }
+            let st = update::check(&paths);
+            println!("Installed: {}   Channel: {:?}", st.current, st.channel);
+            if let Some(e) = st.error {
+                bail!(e);
+            }
+            match (&st.latest, st.available) {
+                (Some(r), true) => {
+                    println!("Newer version available: {}", r.tag);
+                    if check {
+                        return Ok(ExitCode::SUCCESS);
+                    }
+                    match st.kind {
+                        update::InstallKind::User => println!("{}", update::install(&paths, r)?),
+                        update::InstallKind::Package => println!(
+                            "Update with your package manager:  {}",
+                            st.command.unwrap_or_default()
+                        ),
+                        update::InstallKind::NotInstalled => println!(
+                            "Install CachyPlay first (`./cachyplay install`), then update."
+                        ),
+                    }
+                }
+                _ => println!("You have the newest version."),
+            }
+        }
+        Cmd::Channel { channel } => {
+            let mut s = update::Settings::load(&paths);
+            match channel.as_deref() {
+                None => {}
+                Some("stable") => s.channel = update::Channel::Stable,
+                Some("beta") => s.channel = update::Channel::Beta,
+                Some(other) => bail!("unknown channel {other:?}; use `stable` or `beta`"),
+            }
+            s.save(&paths)?;
+            println!("Update channel: {:?}", s.channel);
+            if update::install_kind(&paths) == update::InstallKind::Package {
+                println!(
+                    "Installed from the AUR: switch packages with  {}",
+                    update::package_command(s.channel)
+                );
+            }
+        }
         Cmd::Run { .. } => unreachable!("handled in main"),
     }
     Ok(ExitCode::SUCCESS)
@@ -318,9 +376,16 @@ fn describe(o: Outcome) -> &'static str {
 }
 
 fn restore_all(paths: &Paths, dry_run: bool) -> Result<usize> {
-    let base = ctx(paths)?;
+    let accounts = touched_accounts(paths);
+    if accounts.is_empty() {
+        return Ok(0); // nothing was ever changed; Steam isn't needed
+    }
+    let mut base = Ctx::for_restore(paths.clone())?;
+    if let Some(p) = std::env::var_os("CACHYPLAY_PROC_ROOT") {
+        base.proc_root = PathBuf::from(p); // tests only
+    }
     let mut count = 0;
-    for account in touched_accounts(paths) {
+    for account in accounts {
         let c = base.for_account(&account);
         for app in c.managed_apps() {
             count += 1;

@@ -87,6 +87,24 @@ impl Ctx {
         })
     }
 
+    /// A context for restoring games: works even if the current account can't be determined,
+    /// because restore goes through every account CachyPlay recorded (see `for_account`).
+    pub fn for_restore(paths: Paths) -> Result<Ctx> {
+        let steam = Steam::locate(&paths.home)?;
+        let account = steam.current_account().unwrap_or(Account {
+            account_id: String::new(),
+            persona: String::new(),
+            most_recent: false,
+            timestamp: 0,
+        });
+        Ok(Ctx {
+            paths,
+            steam,
+            account,
+            proc_root: PathBuf::from("/proc"),
+        })
+    }
+
     /// A context for a specific account (used by restore-all for every touched account).
     pub fn for_account(&self, account_id: &str) -> Ctx {
         Ctx {
@@ -96,6 +114,7 @@ impl Ctx {
                 account_id: account_id.to_string(),
                 persona: String::new(),
                 most_recent: false,
+                timestamp: 0,
             },
             proc_root: self.proc_root.clone(),
         }

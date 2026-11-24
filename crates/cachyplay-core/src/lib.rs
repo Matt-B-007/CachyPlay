@@ -11,6 +11,7 @@ pub mod recipes;
 pub mod report;
 pub mod steam;
 pub mod sys;
+pub mod update;
 pub mod vdf;
 pub mod wrapper;
 

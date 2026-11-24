@@ -13,26 +13,21 @@ CachyPlay sits between Steam and your game. It applies known fixes for that game
 
 ## Install
 
-CachyPlay always runs from its own installed location, never from your Downloads folder. Steam's launch options point to that location by its full path.
-
-**From the AUR (recommended):**
+One command in a terminal. While the repository is private it uses the GitHub CLI, so sign in once first with `gh auth login` (CachyOS: `sudo pacman -S github-cli` if you don't have it):
 
 ```bash
-paru -S cachyplay        # stable
-paru -S cachyplay-beta   # beta channel (replaces the stable package)
+gh api repos/Matt-B-007/CachyPlay/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
 ```
 
-**From a downloaded release:**
+That's it. It downloads the newest ready-made build from GitHub Releases, checks its checksum, installs it to `~/.local/bin` (its own location, never Downloads), adds it to your app menu and opens it. From then on CachyPlay **updates itself**: when there's a newer version, an **Update to v…** button appears at the top. Two clicks and a restart.
 
-```bash
-tar -xf cachyplay-v0.1.0-beta.2-x86_64-linux.tar.zst
-cd cachyplay-v0.1.0-beta.2-x86_64-linux
-./cachyplay-gui          # then press Install at the top, or run: ./cachyplay install
-```
+- For the newest beta instead of stable, put `-s -- --beta` after `sh`.
+- Once the repository is public, the command becomes `curl -fsSL https://raw.githubusercontent.com/Matt-B-007/CachyPlay/main/install.sh | sh` and no GitHub sign-in is needed.
+- Running it again just reinstalls; your settings stay.
 
-Both put CachyPlay in `~/.local/bin` and add it to your app menu. After installing, you can delete the downloaded files. CachyPlay refuses to change games when run from anywhere else.
+**From the zip instead:** on GitHub click **Code → Download ZIP**, extract it, right-click inside the folder → **Open Terminal Here**, and run `sh install.sh`. If no ready-made build of that version is on GitHub yet, it builds CachyPlay on your PC (after asking to install the build tools with pacman). Then you can delete the folder.
 
-The desktop app needs WebKitGTK (`webkit2gtk-4.1`), which CachyOS installs with most desktops.
+Installer options: `--beta`, `--from-source`, `--no-launch`. The desktop app needs WebKitGTK (`webkit2gtk-4.1`), which CachyOS installs with most desktops.
 
 ## Use
 
@@ -94,14 +89,25 @@ From the terminal: `cachyplay suggest <appid>`, `cachyplay fix <appid> <id>`, `c
 
 ## Updates
 
-CachyPlay checks GitHub for a newer version when it starts, and never interrupts you. When one exists, a small **Update available** button appears at the top. Click it to read what's new, then **Update now**. Two clicks, then restart CachyPlay.
+CachyPlay checks GitHub for a newer version when it starts, and never interrupts you. When one exists, an **Update to v…** button appears at the top and in Settings → Updates. Click it to read what's new, then **Update now**. Two clicks, then restart CachyPlay.
 
-- **Stable or Beta:** pick a channel in Settings → Updates. Beta gets new features sooner.
+- **Stable or Beta:** pick a channel in Settings → Updates. Beta gets new features sooner. Beta builds follow the Beta channel until you choose; on Stable, CachyPlay tells you when a newer beta is out and offers **Switch to Beta and update**.
+- **Updates come from GitHub Releases.** A release appears when a version tag (like `v0.1.0-beta.7`) is pushed: the Release workflow builds it and attaches the download. Pushing code alone doesn't make an update.
 - **Safe updates:** the download is checked against its SHA-256 checksum and test-run before anything is replaced. The previous version is kept, so **Go back to the previous version** in Settings undoes an update.
 - **AUR installs** are updated by pacman. The app shows the command (`paru -S cachyplay`, or `paru -S cachyplay-beta` for the beta channel).
 - From the terminal: `cachyplay update`, `cachyplay update --check`, `cachyplay channel beta`.
 
 While the GitHub repository is private, updates only work if the GitHub CLI (`gh`) is installed and signed in.
+
+## OBS game capture
+
+To record just the game in OBS instead of your whole desktop, games need to start through `obs-gamecapture` (the same as putting `obs-gamecapture %command%` in Steam's launch options). CachyPlay does that for you:
+
+1. Install it once: `sudo pacman -S --needed obs-vkcapture lib32-obs-vkcapture`.
+2. In CachyPlay, open the game → **Settings** tab → turn on **OBS game capture**. Or turn it on for every game in Settings → OBS game capture.
+3. In OBS, add a **Game Capture** source, then start the game from Steam.
+
+From the terminal: `cachyplay obs 1240440 on`, `cachyplay obs all on`. If `obs-gamecapture` isn't installed, games still start normally. It's kept when you uninstall with "Keep the settings". On NVIDIA, capture needs `nvidia-drm.modeset=1`, which current NVIDIA drivers on CachyOS turn on by default.
 
 ## Bug reports
 

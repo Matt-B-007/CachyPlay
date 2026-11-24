@@ -69,6 +69,66 @@ fn cover(app_id: String) -> Option<String> {
     ))
 }
 
+/// OBS game capture for one game. Turning it on also turns CachyPlay on for the game, since
+/// CachyPlay's launch helper is what starts the game through obs-gamecapture.
+#[tauri::command]
+fn set_obs_capture(app_id: String, on: bool) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = c
+        .steam
+        .find_game(&app_id)
+        .ok_or_else(|| format!("Game {app_id} is not installed"))?;
+    let mut turned_on = false;
+    if on && !c.status(&g).is_ok_and(|s| s.applied) {
+        let bin = library::installed_cli(&p)
+            .ok_or("CachyPlay isn't installed yet. Use the Install button at the top first.")?;
+        c.apply(&g, &bin).map_err(|e| format!("{e:#}"))?;
+        turned_on = true;
+    }
+    cachyplay_core::obs::set_game(&p, &app_id, on).map_err(|e| format!("{e:#}"))?;
+    let mut msg = if on {
+        format!("OBS game capture is on for {}.", g.name)
+    } else if cachyplay_core::obs::load(&p).all {
+        format!(
+            "Turned off for {} only, but it's still on for every game in Settings.",
+            g.name
+        )
+    } else {
+        format!("OBS game capture is off for {}.", g.name)
+    };
+    if turned_on {
+        msg = format!("Turned CachyPlay on for {}. {msg}", g.name);
+    }
+    if on && !cachyplay_core::obs::installed() {
+        msg.push_str(" Install obs-vkcapture first (command in the OBS box).");
+    }
+    Ok(msg)
+}
+
+#[tauri::command]
+fn set_obs_all(on: bool) -> CmdResult<String> {
+    let p = paths()?;
+    cachyplay_core::obs::set_all(&p, on).map_err(|e| format!("{e:#}"))?;
+    Ok(if on {
+        "OBS game capture is on for every game CachyPlay is on for.".into()
+    } else {
+        "OBS game capture for every game is off. Games you turned it on for one by one keep it."
+            .into()
+    })
+}
+
+#[tauri::command]
+fn obs_settings() -> CmdResult<serde_json::Value> {
+    let p = paths()?;
+    let s = cachyplay_core::obs::load(&p);
+    Ok(serde_json::json!({
+        "all": s.all,
+        "installed": cachyplay_core::obs::installed(),
+        "install_command": cachyplay_core::obs::INSTALL_COMMAND,
+    }))
+}
+
 #[tauri::command]
 fn set_enabled(app_id: String, enabled: bool) -> CmdResult<String> {
     let p = paths()?;
@@ -428,6 +488,9 @@ fn main() {
             game_detail,
             cover,
             set_enabled,
+            set_obs_capture,
+            set_obs_all,
+            obs_settings,
             create_report,
             open_folder,
             restore_all,

@@ -8,9 +8,18 @@ Beta builds: v0.1.0-beta.1 (core + command line), v0.1.0-beta.2 (desktop app, up
 v0.1.0-beta.3 (bug reports name the crashing game, privacy fixes),
 v0.1.0-beta.4 (suggested fixes worked out from crashes, logs and your system),
 v0.1.0-beta.5 (see and keep your game settings without CachyPlay),
-v0.1.0-beta.6 (new layout: game list on the left, one clear status and button per game, tabs).
+v0.1.0-beta.6 (new layout: game list on the left, one clear status and button per game, tabs),
+v0.1.0-beta.7 (one-command installer, working update button, OBS game capture).
 
 ### Added
+- One-command installer (beta.7): `sh install.sh` in the unzipped folder. It downloads the
+  ready-made build of that version from GitHub Releases (checksum-checked), or builds it on your PC
+  if there isn't one, after asking to install the build tools. Also works piped from `gh api` with
+  nothing downloaded, and inside release downloads. Opens CachyPlay when done.
+- OBS game capture (beta.7): a switch per game (game → Settings tab) or for every game, which
+  starts games through `obs-gamecapture` so OBS's Game Capture source records just the game.
+  Skipped if obs-vkcapture isn't installed, kept on uninstall with "Keep the settings",
+  `cachyplay obs <appid|all> on|off` in the terminal.
 - New app layout (beta.6): a searchable game list on the left with crashing games pinned under
   "Needs attention"; each game opens with one plain sentence about its state and one main button
   (for example "Apply recommended fix"); Overview, Fixes, Settings and History tabs; icon buttons for
@@ -64,6 +73,10 @@ v0.1.0-beta.6 (new layout: game list on the left, one clear status and button pe
   default in the app; `cachyplay uninstall --keep-settings` in the terminal.
 
 ### Fixed
+- Updates (beta.7): Settings → Updates now has an **Update to v…** button (before, it only said an
+  update existed). Beta builds follow the Beta channel until you pick one, so they see newer betas;
+  on Stable, a newer beta is offered with **Switch to Beta and update**. When nothing has been
+  published on GitHub yet, it says so instead of claiming you're up to date.
 - Bug reports no longer contain MAC addresses, IP addresses or the GPU's unique ID, and firewall log
   lines are left out entirely.
 - General reports no longer say "this game"; duplicate package lines removed.

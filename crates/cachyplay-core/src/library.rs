@@ -123,6 +123,8 @@ pub struct GameDetail {
     pub standalone_launch_options: Option<String>,
     /// GPU driver crashes while this game ran, newest first.
     pub crashes: Vec<CrashInfo>,
+    /// OBS game capture for this game.
+    pub obs: crate::obs::ObsInfo,
 }
 
 /// The installed `cachyplay` command (what Steam's launch options point to).
@@ -432,6 +434,27 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
             status: "fix".into(),
         });
     }
+    let user_options = status
+        .as_ref()
+        .map(|s| s.user_options.clone())
+        .unwrap_or_default();
+    let obs = crate::obs::info(&ctx.paths, &game.app_id, &user_options);
+    if obs.on {
+        changes.push(ChangeRow {
+            setting: "OBS game capture".into(),
+            technical: Some("obs-gamecapture %command%".into()),
+            stock: "Off".into(),
+            cachyplay: "On".into(),
+            why: if obs.installed {
+                "OBS's Game Capture source records just this game instead of the whole screen."
+                    .into()
+            } else {
+"Skipped until obs-vkcapture is installed (the command is in the OBS game capture box below)."
+                    .into()
+            },
+            status: "fix".into(),
+        });
+    }
     let launches = recent_launches(&ctx.paths, &game.app_id, 5);
     let events = current_events(ctx);
     let crash_list: Vec<CrashInfo> = events
@@ -464,10 +487,8 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
             .as_ref()
             .map(|s| s.launch_options.clone())
             .unwrap_or_default(),
-        user_options: status
-            .as_ref()
-            .map(|s| s.user_options.clone())
-            .unwrap_or_default(),
+        user_options,
+        obs,
         edited_since: status.as_ref().is_some_and(|s| s.edited_since),
         tweaks: status.map(|s| s.tweaks).unwrap_or_default(),
         fix: recipe.as_ref().map(|r| FixInfo {

@@ -38,7 +38,7 @@ jobs:
         run: |
           name="cachyplay-${GITHUB_REF_NAME}-x86_64-linux"
           mkdir -p "dist/$name"
-          cp target/release/cachyplay target/release/cachyplay-gui README.md LICENSE CHANGELOG.md "dist/$name/"
+          cp target/release/cachyplay target/release/cachyplay-gui install.sh README.md LICENSE CHANGELOG.md "dist/$name/"
           cp assets/cachyplay.svg "dist/$name/"
           (cd dist && tar --zstd -cf "$name.tar.zst" "$name" && sha256sum "$name.tar.zst" > SHA256SUMS.txt)
 

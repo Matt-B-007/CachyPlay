@@ -438,6 +438,8 @@ function settingsTab(d) {
     !d.fix ? h("p", { class: "note" }, "No fix file for this game yet. CachyPlay still records each launch and helps with bug reports.") : null,
     d.fix && d.fix.notes ? h("p", { class: "note" }, d.fix.notes) : null)];
 
+  out.push(obsCard(d));
+
   if (d.standalone_launch_options) {
     out.push(card("keep",
       h("h2", { class: "card-title" }, "Keep these settings without CachyPlay"),
@@ -458,6 +460,43 @@ function settingsTab(d) {
   }
   out.push(h("details", { class: "raw" }, h("summary", {}, "Show Steam's launch options for this game"), h("code", {}, d.launch_options || "(empty)")));
   return out;
+}
+
+function obsCard(d) {
+  const o = d.obs;
+  const blocked = editBlocked();
+  // Turning it on may need to turn CachyPlay on too, which needs Steam closed and CachyPlay installed.
+  const needsEnable = !d.summary.enabled;
+  const disabled = state.busy || o.in_your_options || (needsEnable && !o.on && (!!blocked || !state.overview.installed_cli));
+  let note;
+  if (o.in_your_options) note = "Already on: your own Steam launch options start this game with obs-gamecapture.";
+  else if (o.on && needsEnable) note = "On, but CachyPlay is off for this game, so it isn't used. Turn CachyPlay on above.";
+  else if (o.all && o.on) note = "On for every game (change it in Settings).";
+  else if (o.on) note = "On. In OBS, add a Game Capture source, then start the game from Steam.";
+  else if (needsEnable && blocked) note = `${blocked} Turning this on also turns CachyPlay on for the game.`;
+  else if (needsEnable) note = "Turning this on also turns CachyPlay on for this game.";
+  else note = "Off. OBS records your screen as usual.";
+  return card("obs",
+    h("div", { class: "obs-row" },
+      h("div", {},
+        h("h2", { class: "card-title" }, "OBS game capture"),
+        h("p", { class: "muted" }, "Records just this game with OBS's Game Capture source, instead of your whole desktop. Same as ", h("code", {}, "obs-gamecapture %command%"), " in Steam.")),
+      h("button", {
+        class: "switch",
+        role: "switch",
+        "aria-checked": o.on || o.in_your_options ? "true" : "false",
+        "aria-label": `OBS game capture for ${d.summary.name}`,
+        disabled,
+        title: disabled && blocked ? blocked : "",
+        onclick: () => setObs(d.summary.app_id, !o.on),
+      })),
+    h("p", { class: "s-note" }, note),
+    !o.installed && !o.in_your_options
+      ? h("div", { class: "note obs-install" },
+          h("p", {}, "obs-gamecapture isn't installed yet. Install it once in a terminal:"),
+          h("code", { class: "kept-line" }, o.install_command),
+          h("div", { class: "actions" }, h("button", { class: "secondary", onclick: () => copyText(o.install_command, "Copied. Paste it into a terminal.") }, "Copy")))
+      : null);
 }
 
 function historyTab(d) {
@@ -584,9 +623,11 @@ function renderUpdate() {
   const u = state.update;
   const pill = $("update-pill");
   const line = $("update-line");
+  const btn = $("update-now-settings");
   if (!u) return;
   for (const r of document.querySelectorAll('input[name="channel"]')) r.checked = r.value === u.channel;
   $("roll-back").hidden = !u.can_roll_back;
+  btn.hidden = true;
   if (u.error) {
     pill.hidden = true;
     line.className = "status-line bad";
@@ -595,9 +636,26 @@ function renderUpdate() {
   }
   if (u.available && u.latest) {
     pill.hidden = false;
-    pill.textContent = `Update available: ${u.latest.tag}`;
+    pill.textContent = `Update to ${u.latest.tag}`;
     line.className = "status-line new";
     line.textContent = `${u.latest.tag} is available. You have v${u.current}.`;
+    btn.hidden = false;
+    btn.textContent = `Update to ${u.latest.tag}`;
+    btn.onclick = openUpdateDialog;
+  } else if (u.newer_beta) {
+    pill.hidden = true;
+    line.className = "status-line new";
+    line.textContent = `You have the newest Stable version (v${u.current}). A newer beta, ${u.newer_beta.tag}, is out.`;
+    btn.hidden = false;
+    btn.textContent = `Switch to Beta and update`;
+    btn.onclick = async () => {
+      await setChannel("beta");
+      openUpdateDialog();
+    };
+  } else if (u.no_releases) {
+    pill.hidden = true;
+    line.className = "status-line";
+    line.textContent = `You have v${u.current}. No CachyPlay release has been published on GitHub yet, so there's nothing to update to.`;
   } else {
     pill.hidden = true;
     line.className = "status-line good";
@@ -607,7 +665,7 @@ function renderUpdate() {
 
 function openUpdateDialog() {
   const u = state.update;
-  if (!u || !u.latest) return;
+  if (!u || !u.latest || !u.available) return;
   $("update-title").textContent = `CachyPlay ${u.latest.tag} is available`;
   $("update-notes").replaceChildren(...notesView(u.latest.notes || ""));
   const btn = $("update-now");
@@ -622,8 +680,12 @@ function openUpdateDialog() {
     $("update-command-text").value = u.command;
     btn.hidden = true;
   } else if (u.kind === "notinstalled") {
-    $("update-sub").textContent = `You have v${u.current}, running from a download or build folder. Install CachyPlay first (button at the top), then update.`;
-    btn.hidden = true;
+    $("update-sub").textContent = `You have v${u.current}, running from a download or build folder. Install CachyPlay first, then update.`;
+    btn.textContent = "Install CachyPlay";
+    btn.onclick = async () => {
+      $("update-dialog").close();
+      await installSelf();
+    };
   } else {
     $("update-sub").textContent = `You have v${u.current}. The download is checked before it's installed, and your current version is kept so you can go back.`;
   }
@@ -689,7 +751,7 @@ async function setChannel(channel) {
   } catch (e) {
     toast(String(e), "error");
   }
-  checkUpdates(false);
+  await checkUpdates(false);
 }
 
 async function rollBack() {
@@ -740,13 +802,57 @@ function openSettings() {
   renderUpdate();
   if (!state.update) checkUpdates(false);
   renderKept();
+  renderObsSettings();
   $("settings").showModal();
 }
 
-async function copyText(text) {
+async function renderObsSettings() {
+  let o;
+  try {
+    o = await invoke("obs_settings");
+  } catch {
+    return;
+  }
+  $("obs-all").checked = o.all;
+  const line = $("obs-status");
+  if (o.installed) {
+    line.className = "status-line good";
+    line.replaceChildren("obs-gamecapture is installed.");
+  } else {
+    line.className = "status-line";
+    line.replaceChildren(
+      "obs-gamecapture isn't installed. Install it in a terminal: ",
+      h("code", {}, o.install_command), " ",
+      h("button", { type: "button", class: "link", onclick: () => copyText(o.install_command, "Copied. Paste it into a terminal.") }, "Copy"));
+  }
+}
+
+async function setObsAll(on) {
+  try {
+    toast(await invoke("set_obs_all", { on }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  renderObsSettings();
+  if (state.selected) showGame(state.selected, { keepScroll: true });
+}
+
+async function setObs(appId, on) {
+  state.busy = true;
+  try {
+    toast(await invoke("set_obs_capture", { appId, on }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  } finally {
+    state.busy = false;
+    await load();
+  }
+}
+
+async function copyText(text, done = "Copied. Paste it into the game's Launch options in Steam.") {
   try {
     await navigator.clipboard.writeText(text);
-    toast("Copied. Paste it into the game's Launch options in Steam.", "success");
+    toast(done, "success");
   } catch {
     toast("Couldn't copy automatically. Select the line and press Ctrl+C.");
   }
@@ -840,6 +946,7 @@ $("check-updates").addEventListener("click", () => checkUpdates(false));
 $("roll-back").addEventListener("click", rollBack);
 $("copy-command").addEventListener("click", copyCommand);
 $("export-settings").addEventListener("click", exportSettings);
+$("obs-all").addEventListener("change", (e) => setObsAll(e.target.checked));
 for (const r of document.querySelectorAll('input[name="channel"]')) {
   r.addEventListener("change", () => r.checked && setChannel(r.value));
 }

@@ -11,6 +11,7 @@ pub mod keep;
 pub mod launch_options;
 pub mod library;
 pub mod manage;
+pub mod obs;
 pub mod paths;
 pub mod recipes;
 pub mod report;

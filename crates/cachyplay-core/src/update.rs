@@ -25,12 +25,27 @@ pub const REPO: &str = "Matt-B-007/CachyPlay";
 const NET_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
-    #[default]
     Stable,
     Beta,
+}
+
+/// Until you pick a channel, a beta build follows Beta (otherwise it would never see the next beta)
+/// and a stable build follows Stable.
+pub fn default_channel() -> Channel {
+    if crate::VERSION.contains('-') {
+        Channel::Beta
+    } else {
+        Channel::Stable
+    }
+}
+
+impl Default for Channel {
+    fn default() -> Self {
+        default_channel()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -129,6 +144,10 @@ pub struct UpdateStatus {
     pub command: Option<String>,
     pub can_roll_back: bool,
     pub error: Option<String>,
+    /// On Stable with nothing newer there: a newer beta, offered with a "switch to Beta" button.
+    pub newer_beta: Option<Release>,
+    /// GitHub answered, but no CachyPlay release has been published yet.
+    pub no_releases: bool,
 }
 
 pub fn install_kind(paths: &Paths) -> InstallKind {
@@ -252,15 +271,25 @@ pub fn check(paths: &Paths) -> UpdateStatus {
         command: (kind == InstallKind::Package).then(|| package_command(settings.channel)),
         can_roll_back: paths.user_bin().with_extension("prev").is_file(),
         error: None,
+        newer_beta: None,
+        no_releases: false,
     };
     match fetch_releases() {
         Ok(releases) => {
             let latest = pick(&releases, settings.channel);
             let cur = Version::parse(crate::VERSION);
-            status.available = match (&latest, &cur) {
+            let newer = |r: &Option<Release>| match (r, &cur) {
                 (Some(r), Some(c)) => Version::parse(&r.tag).is_some_and(|v| v > *c),
                 _ => false,
             };
+            status.available = newer(&latest);
+            if !status.available && settings.channel == Channel::Stable {
+                let beta = pick(&releases, Channel::Beta);
+                if newer(&beta) {
+                    status.newer_beta = beta;
+                }
+            }
+            status.no_releases = releases.is_empty();
             status.latest = latest;
         }
         Err(e) => status.error = Some(format!("{e:#}")),
@@ -503,7 +532,7 @@ mod tests {
     fn settings_round_trip() {
         let d = tempfile::tempdir().unwrap();
         let p = Paths::isolated(d.path());
-        assert_eq!(Settings::load(&p).channel, Channel::Stable);
+        assert_eq!(Settings::load(&p).channel, default_channel());
         Settings {
             channel: Channel::Beta,
         }

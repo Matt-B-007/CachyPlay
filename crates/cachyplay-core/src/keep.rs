@@ -91,6 +91,16 @@ pub fn settings_for(ctx: &Ctx, game: &Game, facts: &Facts) -> Vec<Setting> {
             });
         }
     }
+    let obs =
+        (crate::obs::enabled_for(&ctx.paths, &game.app_id) && crate::obs::installed()).then(|| {
+            Setting {
+            label: "OBS game capture".into(),
+            value: crate::obs::TOOL.into(),
+            why: "Lets OBS's Game Capture source record just this game instead of the whole screen"
+                .into(),
+            source: "your setting".into(),
+        }
+        });
     let mut out: Vec<Setting> = env
         .into_iter()
         .map(|(k, v, why, source)| Setting {
@@ -100,6 +110,7 @@ pub fn settings_for(ctx: &Ctx, game: &Game, facts: &Facts) -> Vec<Setting> {
             source,
         })
         .collect();
+    out.extend(obs);
     out.extend(gp);
     out.extend(args);
     out
@@ -113,6 +124,8 @@ fn friendly(k: &str) -> String {
         other => other.into(),
     }
 }
+
+const WRAPPERS: [&str; 2] = ["game-performance", crate::obs::TOOL];
 
 /// Steam launch options that apply `settings` without CachyPlay, keeping the user's own options.
 /// `current` may contain CachyPlay's launch helper; it is removed.
@@ -145,15 +158,17 @@ pub fn standalone_launch_options(
             prefix.push(format!("{k}={}", shell_quote(v)));
         }
     }
-    if have_game_performance
-        && settings.iter().any(|s| s.value == "game-performance")
-        && !base.contains("game-performance")
-    {
+    // Programs that start the game (obs-gamecapture is only listed when it's installed).
+    let wanted = |tool: &str| settings.iter().any(|s| s.value == tool) && !base.contains(tool);
+    if wanted(crate::obs::TOOL) {
+        prefix.push(crate::obs::TOOL.into());
+    }
+    if have_game_performance && wanted("game-performance") {
         prefix.push("game-performance".into());
     }
     let suffix: Vec<&str> = settings
         .iter()
-        .filter(|s| !s.value.contains('=') && s.value != "game-performance")
+        .filter(|s| !s.value.contains('=') && !WRAPPERS.contains(&s.value.as_str()))
         .map(|s| s.value.as_str())
         .collect();
     let i = base.find(COMMAND).unwrap_or(0);
@@ -254,13 +269,14 @@ mod tests {
                 st("VK_LOADER_LAYERS_DISABLE=VK_LAYER_AFMF,VK_LAYER_MAKO_render"),
                 st("PROTON_ENABLE_NVAPI=1"),
                 st("game-performance"),
+                st("obs-gamecapture"),
                 st("-screen-fullscreen 0"),
             ],
             true,
         );
         assert_eq!(
             out,
-            "PROTON_LOG=1 VK_LOADER_LAYERS_DISABLE=VK_LAYER_AFMF,VK_LAYER_MAKO_render PROTON_ENABLE_NVAPI=1 game-performance %command% -nosplash -screen-fullscreen 0"
+            "PROTON_LOG=1 VK_LOADER_LAYERS_DISABLE=VK_LAYER_AFMF,VK_LAYER_MAKO_render PROTON_ENABLE_NVAPI=1 obs-gamecapture game-performance %command% -nosplash -screen-fullscreen 0"
         );
         assert!(
             !launch_options::is_applied(&out),
@@ -282,6 +298,14 @@ mod tests {
         assert_eq!(
             standalone_launch_options("", &[st("game-performance")], false),
             "%command%"
+        );
+    }
+
+    #[test]
+    fn does_not_add_obs_twice() {
+        assert_eq!(
+            standalone_launch_options("obs-gamecapture %command%", &[st("obs-gamecapture")], false),
+            "obs-gamecapture %command%"
         );
     }
 

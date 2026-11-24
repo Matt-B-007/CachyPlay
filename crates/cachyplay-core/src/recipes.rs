@@ -287,6 +287,8 @@ pub struct Plan {
     pub env: Vec<(String, String, String)>, // (name, value, why)
     pub extra_args: Vec<String>,
     pub game_performance: bool,
+    /// Start the game through obs-gamecapture (set by the wrapper from your OBS setting, not by fix files).
+    pub obs_capture: bool,
     pub applied: Vec<String>,
     pub skipped: Vec<String>,
     pub min_runtime_secs: u64,

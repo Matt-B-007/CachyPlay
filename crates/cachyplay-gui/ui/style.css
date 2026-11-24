@@ -398,3 +398,11 @@ dialog#confirm { width: min(440px, 92vw); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- OBS game capture ---------- */
+.obs-row { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; }
+.obs-row > div { display: grid; gap: 6px; }
+.obs-install { display: grid; gap: 8px; }
+.obs-install p { color: var(--muted); }
+#obs-status code { display: block; margin: 6px 0 2px; color: var(--text); word-break: normal; }
+.obs-row code { white-space: nowrap; word-break: normal; }

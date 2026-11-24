@@ -509,3 +509,61 @@ fn uninstall_can_keep_the_settings_that_made_a_game_work() {
         .join("Desktop/CachyPlay game settings.txt")
         .exists());
 }
+
+#[test]
+fn obs_capture_starts_the_game_through_obs_gamecapture() {
+    let f = FakeSteam::new();
+    ok(cmd(&f, &["apply", "1240440"])
+        .env("CACHYPLAY_DEV", "1")
+        .output()
+        .unwrap());
+    let lo = launch_options(&f);
+    let game = fake_game(f.home());
+
+    // A PATH with only `sh`, so the real obs-gamecapture (if this PC has it) can't be found.
+    let tools = f.home().join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", tools.join("sh")).unwrap();
+    let bare = tools.display().to_string();
+
+    // Turned on, but obs-gamecapture isn't installed: the game still starts normally.
+    let o = ok(cmd(&f, &["obs", "1240440", "on"])
+        .env("CACHYPLAY_DEV", "1")
+        .env("PATH", &bare)
+        .output()
+        .unwrap());
+    assert!(o.contains("isn't installed"), "{o}");
+    let (code, out) = steam_launch(&f, &lo, &game, &[("PATH", &bare)]);
+    assert_eq!(code, 0);
+    assert!(out.contains("args:-nosplash"), "{out}");
+
+    // A stand-in obs-gamecapture that leaves a mark and runs the game, like the real one.
+    let bin = f.home().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let obs = bin.join("obs-gamecapture");
+    fs::write(
+        &obs,
+        "#!/bin/sh\necho captured > \"$OUT.obs\"\nexport OBS_VKCAPTURE=1\nexec \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&obs, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{bare}", bin.display());
+    let mark = f.home().join("game-output.obs");
+    let (code, out) = steam_launch(&f, &lo, &game, &[("PATH", &path)]);
+    assert_eq!(code, 0);
+    assert!(out.contains("args:-nosplash"), "{out}");
+    assert!(
+        mark.exists(),
+        "the game was started through obs-gamecapture"
+    );
+
+    // Kept when uninstalling with "keep settings".
+    let s = ok(cmd(&f, &["settings"]).env("PATH", &path).output().unwrap());
+    assert!(s.contains("obs-gamecapture %command% -nosplash"), "{s}");
+
+    // Turned off: no longer wrapped.
+    fs::remove_file(&mark).unwrap();
+    ok(cmd(&f, &["obs", "1240440", "off"]).output().unwrap());
+    steam_launch(&f, &lo, &game, &[("PATH", &path)]);
+    assert!(!mark.exists());
+}

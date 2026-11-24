@@ -61,6 +61,17 @@ fn prepare(paths: &Paths, app_id: Option<&str>) -> anyhow::Result<Plan> {
         plan.extra_args.extend(fix.args.iter().cloned());
         plan.applied.push(format!("Fix: {}", fix.label));
     }
+    if crate::obs::enabled_for(paths, app_id) {
+        if std::env::var("OBS_VKCAPTURE").is_ok_and(|v| v == "1") {
+            // Already started through obs-gamecapture (e.g. in your own launch options).
+        } else if crate::obs::installed() {
+            plan.obs_capture = true;
+            plan.applied.push("OBS game capture".into());
+        } else {
+            plan.skipped
+                .push("OBS game capture (obs-gamecapture isn't installed)".into());
+        }
+    }
     Ok(plan)
 }
 
@@ -194,7 +205,7 @@ fn notify_failure(paths: &Paths, app_id: &str, runtime: f64) {
 }
 
 fn plan_is_empty(p: &Plan) -> bool {
-    p.env.is_empty() && p.extra_args.is_empty() && !p.game_performance
+    p.env.is_empty() && p.extra_args.is_empty() && !p.game_performance && !p.obs_capture
 }
 
 fn build(command: &[OsString], plan: &Plan, passthrough: bool) -> Command {
@@ -204,6 +215,11 @@ fn build(command: &[OsString], plan: &Plan, passthrough: bool) -> Command {
         return c;
     }
     let mut argv: Vec<OsString> = Vec::new();
+    if plan.obs_capture {
+        if let Some(obs) = sys::which(crate::obs::TOOL) {
+            argv.push(obs.into_os_string());
+        }
+    }
     if plan.game_performance {
         if let Some(gp) = sys::which("game-performance") {
             argv.push(gp.into_os_string());

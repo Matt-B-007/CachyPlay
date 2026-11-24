@@ -61,6 +61,14 @@ enum Cmd {
         #[arg(long)]
         export: bool,
     },
+    /// OBS game capture: start a game through obs-gamecapture so OBS records just the game.
+    /// `cachyplay obs 1240440 on`, `cachyplay obs 1240440 off`, `cachyplay obs all on`, or no arguments to show it
+    Obs {
+        /// A game's AppID, or `all` for every game CachyPlay is on for
+        target: Option<String>,
+        /// on or off
+        state: Option<String>,
+    },
     /// Check this PC for common gaming problems
     Doctor,
     /// Install this downloaded copy to ~/.local/bin (its own location)
@@ -446,7 +454,80 @@ fn real_main() -> Result<ExitCode> {
                         ),
                     }
                 }
-                _ => println!("You have the newest version."),
+                _ if st.no_releases => println!(
+                    "No CachyPlay release has been published on GitHub yet, so there's nothing to update to."
+                ),
+                _ => {
+                    println!("You have the newest {:?} version.", st.channel);
+                    if let Some(b) = &st.newer_beta {
+                        println!(
+                            "A newer beta is out: {}. Get it with:  cachyplay channel beta && cachyplay update",
+                            b.tag
+                        );
+                    }
+                }
+            }
+        }
+        Cmd::Obs { target, state } => {
+            use cachyplay_core::obs;
+            let on = match state.as_deref() {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => bail!("use `on` or `off`, not {other:?}"),
+            };
+            match (target.as_deref(), on) {
+                (None, _) | (Some(_), None) => {
+                    let s = obs::load(&paths);
+                    println!(
+                        "OBS game capture: {}",
+                        if s.all {
+                            "on for every game CachyPlay is on for"
+                        } else {
+                            "per game"
+                        }
+                    );
+                    if !s.games.is_empty() {
+                        println!("On for: {}", s.games.join(", "));
+                    }
+                    if !obs::installed() {
+                        println!(
+                            "obs-gamecapture isn't installed. Install it with:  {}",
+                            obs::INSTALL_COMMAND
+                        );
+                    }
+                }
+                (Some("all"), Some(on)) => {
+                    obs::set_all(&paths, on)?;
+                    println!(
+                        "OBS game capture for every game: {}",
+                        if on { "on" } else { "off" }
+                    );
+                }
+                (Some(app_id), Some(on)) => {
+                    let ctx = ctx(&paths)?;
+                    let game = ctx
+                        .steam
+                        .find_game(app_id)
+                        .with_context(|| format!("game {app_id} is not installed"))?;
+                    if on && !ctx.status(&game).is_ok_and(|s| s.applied) {
+                        let bin = paths::installed_binary(&paths)?;
+                        ctx.apply(&game, &bin)?;
+                        println!("Turned CachyPlay on for {}.", game.name);
+                    }
+                    obs::set_game(&paths, app_id, on)?;
+                    println!(
+                        "OBS game capture for {}: {}",
+                        game.name,
+                        if on { "on" } else { "off" }
+                    );
+                    if on && !obs::installed() {
+                        println!(
+                            "obs-gamecapture isn't installed yet. Install it with:  {}",
+                            obs::INSTALL_COMMAND
+                        );
+                    }
+                }
             }
         }
         Cmd::Channel { channel } => {

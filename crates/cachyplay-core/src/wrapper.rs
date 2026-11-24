@@ -45,10 +45,23 @@ fn prepare(paths: &Paths, app_id: Option<&str>) -> anyhow::Result<Plan> {
     if std::env::var_os("CACHYPLAY_TEST_PANIC").is_some() {
         panic!("test panic in prepare");
     }
-    match recipes::find(app_id, &paths.config, &paths.recipes())? {
-        Some(r) => Ok(recipes::plan(&r, &Facts::detect())),
-        None => Ok(Plan::default()),
+    let mut plan = match recipes::find(app_id, &paths.config, &paths.recipes())? {
+        Some(r) => recipes::plan(&r, &Facts::detect()),
+        None => Plan::default(),
+    };
+    // Fixes you applied from a suggestion win over the fix file.
+    for fix in crate::fixes::load(paths, app_id).fixes {
+        for (k, v) in &fix.env {
+            if !crate::fixes::fix_env_allowed(k) {
+                continue;
+            }
+            plan.env.retain(|(name, _, _)| name != k);
+            plan.env.push((k.clone(), v.clone(), fix.label.clone()));
+        }
+        plan.extra_args.extend(fix.args.iter().cloned());
+        plan.applied.push(format!("Fix: {}", fix.label));
     }
+    Ok(plan)
 }
 
 /// Run the game. Returns the exit code to hand back to Steam.

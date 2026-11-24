@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use cachyplay_core::manage::{touched_accounts, Ctx, Outcome};
 use cachyplay_core::paths::{self, Paths};
-use cachyplay_core::{install, launch_options, recipes, report, steam, update, wrapper};
+use cachyplay_core::{install, keep, launch_options, recipes, report, steam, update, wrapper};
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::io::Write;
@@ -45,6 +45,22 @@ enum Cmd {
     },
     /// Save a timestamped bug report to your Desktop
     Report { app_id: Option<String> },
+    /// Suggest fixes for a game, worked out from crashes, logs and your system
+    Suggest { app_id: String },
+    /// Apply a suggested fix to a game (or undo it with --undo)
+    Fix {
+        app_id: String,
+        /// The suggestion id shown by `cachyplay suggest`
+        id: String,
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Show the settings CachyPlay applies to each game, as Steam launch options you can keep
+    Settings {
+        /// Also save them to a text file on your Desktop
+        #[arg(long)]
+        export: bool,
+    },
     /// Check this PC for common gaming problems
     Doctor,
     /// Install this downloaded copy to ~/.local/bin (its own location)
@@ -54,6 +70,9 @@ enum Cmd {
         /// Also delete save backups and config backups
         #[arg(long)]
         remove_backups: bool,
+        /// Write each game's working settings into Steam so they keep working without CachyPlay
+        #[arg(long)]
+        keep_settings: bool,
         /// Don't ask for confirmation
         #[arg(long, short)]
         yes: bool,
@@ -271,6 +290,77 @@ fn real_main() -> Result<ExitCode> {
             println!("Contains: {}", r.files.join(", "));
             println!("Personal details (home folder, username, Steam IDs, hostname, tokens) were removed.");
         }
+        Cmd::Suggest { app_id } => {
+            let c = ctx(&paths)?;
+            let g = c
+                .steam
+                .find_game(&app_id)
+                .with_context(|| format!("game {app_id} is not installed"))?;
+            let list = cachyplay_core::advice::for_game(&c, &g);
+            if list.is_empty() {
+                println!(
+                    "No suggestions for {}: CachyPlay found no crashes or problems to act on.",
+                    g.name
+                );
+            }
+            for sg in list {
+                let state = match sg.status {
+                    cachyplay_core::advice::Status::New => "",
+                    cachyplay_core::advice::Status::Applied => "  [applied]",
+                    cachyplay_core::advice::Status::Worked => "  [applied: worked]",
+                    cachyplay_core::advice::Status::DidntHelp => "  [applied: didn't help]",
+                };
+                println!("\n{}{state}\n  id: {}", sg.title, sg.id);
+                for w in &sg.why {
+                    println!("  - {w}");
+                }
+                match &sg.fix {
+                    Some(_) => println!("  Apply:  cachyplay fix {app_id} {}", sg.id),
+                    None => sg.steps.iter().for_each(|st| println!("  Step:   {st}")),
+                }
+            }
+        }
+        Cmd::Fix { app_id, id, undo } => {
+            let c = ctx(&paths)?;
+            let g = c
+                .steam
+                .find_game(&app_id)
+                .with_context(|| format!("game {app_id} is not installed"))?;
+            if undo {
+                if cachyplay_core::fixes::remove(&paths, &app_id, &id)? {
+                    println!("Undid \"{id}\" for {}.", g.name);
+                } else {
+                    println!("\"{id}\" wasn't applied to {}.", g.name);
+                }
+            } else {
+                let bin = paths::installed_binary(&paths).ok();
+                println!(
+                    "{}",
+                    cachyplay_core::advice::apply_suggestion(&c, &g, &id, bin.as_deref())?
+                );
+            }
+        }
+        Cmd::Settings { export } => {
+            let c = ctx(&paths)?;
+            let games = keep::all(&c);
+            if games.is_empty() {
+                println!("No game has CachyPlay settings right now.");
+            }
+            for g in &games {
+                println!(
+                    "\n{} ({})\n  Launch options without CachyPlay:\n    {}",
+                    g.name, g.app_id, g.launch_options
+                );
+                for st in &g.settings {
+                    println!("  - {}: {}  ({})", st.label, st.value, st.source);
+                }
+            }
+            if export {
+                let file = paths.report_dir().join("CachyPlay game settings.txt");
+                std::fs::write(&file, keep::export_text(&games))?;
+                println!("\nSaved to {}", file.display());
+            }
+        }
         Cmd::Doctor => doctor(&paths)?,
         Cmd::Install => {
             let exe = std::env::current_exe()?;
@@ -288,10 +378,15 @@ fn real_main() -> Result<ExitCode> {
         }
         Cmd::Uninstall {
             remove_backups,
+            keep_settings,
             yes,
         } => {
             println!("This will:");
-            println!("  1. Restore the launch options of every game CachyPlay changed (your own options are kept)");
+            if keep_settings {
+                println!("  1. Write each game's working settings into its Steam launch options (and save a copy to your Desktop)");
+            } else {
+                println!("  1. Restore the launch options of every game CachyPlay changed (your own options are kept)");
+            }
             println!("  2. Remove CachyPlay's cache, logs, fix files and records");
             println!(
                 "  3. {} save and config backups",
@@ -302,7 +397,17 @@ fn real_main() -> Result<ExitCode> {
                 println!("Cancelled. Nothing was changed.");
                 return Ok(ExitCode::SUCCESS);
             }
-            restore_all(&paths, false)?;
+            if keep_settings {
+                if let Ok(c) = Ctx::for_restore(paths.clone()) {
+                    let games = keep::all(&c);
+                    if !games.is_empty() {
+                        let file = paths.report_dir().join("CachyPlay game settings.txt");
+                        std::fs::write(&file, keep::export_text(&games))?;
+                        println!("Saved a copy of your game settings to {}", file.display());
+                    }
+                }
+            }
+            restore_all_with(&paths, false, keep_settings)?;
             let removed = install::remove_user_files(&paths, remove_backups)?;
             for r in removed {
                 println!("Removed {}", r.display());
@@ -372,10 +477,16 @@ fn describe(o: Outcome) -> &'static str {
         Outcome::RemovedKeptUserEdits => "removed CachyPlay and kept the edits you made in Steam",
         Outcome::NothingToUndo => "CachyPlay wasn't on for this game",
         Outcome::Applied | Outcome::AlreadyApplied => "unchanged",
+        Outcome::Kept => "kept its settings in Steam",
     }
 }
 
 fn restore_all(paths: &Paths, dry_run: bool) -> Result<usize> {
+    restore_all_with(paths, dry_run, false)
+}
+
+/// Restore every managed game; with `keep`, games with settings get them written into Steam instead.
+fn restore_all_with(paths: &Paths, dry_run: bool, keep_settings: bool) -> Result<usize> {
     let accounts = touched_accounts(paths);
     if accounts.is_empty() {
         return Ok(0); // nothing was ever changed; Steam isn't needed
@@ -387,8 +498,21 @@ fn restore_all(paths: &Paths, dry_run: bool) -> Result<usize> {
     let mut count = 0;
     for account in accounts {
         let c = base.for_account(&account);
+        let kept: std::collections::BTreeMap<String, String> = if keep_settings {
+            keep::all(&c)
+                .into_iter()
+                .map(|g| (g.app_id, g.launch_options))
+                .collect()
+        } else {
+            Default::default()
+        };
         for app in c.managed_apps() {
             count += 1;
+            if let (false, Some(lo)) = (dry_run, kept.get(&app)) {
+                c.keep_settings(&app, lo)?;
+                println!("{app} (account {account}): kept its settings in Steam: {lo}");
+                continue;
+            }
             if dry_run {
                 let lo = c.launch_options(&app).ok().flatten().unwrap_or_default();
                 println!(

@@ -46,6 +46,20 @@ pub const RULES: &[Rule] = &[
         bucket: Bucket::GameOrProton,
     },
     Rule {
+        id: "unity_crash",
+        patterns: &["Crash!!!", "Received signal SIGSEGV", "Native Crash Reporting", "UnityPlayer.dll caused"],
+        diagnosis: "The game itself (Unity engine) crashed; its Player.log shows where.",
+        suggestion: "Check the lines just above the crash in the Unity log. If it started after a game update, report it to the game's developer with this bug report.",
+        bucket: Bucket::GameOrProton,
+    },
+    Rule {
+        id: "vulkan_present",
+        patterns: &["vkQueuePresentKHR failed", "VK_ERROR_SURFACE_LOST", "VK_ERROR_OUT_OF_DATE"],
+        diagnosis: "Showing a frame on screen failed (Vulkan present error).",
+        suggestion: "Try the game without Vulkan add-ons (VK_LOADER_LAYERS_DISABLE=*AFMF*,*MAKO* %command%) and in a window instead of fullscreen.",
+        bucket: Bucket::GameOrProton,
+    },
+    Rule {
         id: "unimplemented",
         patterns: &["unimplemented function"],
         diagnosis: "The game used a Windows feature this Proton version doesn't have.",
@@ -67,7 +81,8 @@ pub struct Finding {
 pub fn scan(text: &str) -> Vec<Finding> {
     let mut out = Vec::new();
     for rule in RULES {
-        let lines: Vec<String> = text
+        // Newest lines first: logs grow downward, and the latest crash matters most.
+        let mut lines: Vec<String> = text
             .lines()
             .filter(|l| {
                 let low = l.to_lowercase();
@@ -75,9 +90,11 @@ pub fn scan(text: &str) -> Vec<Finding> {
                     .iter()
                     .any(|p| low.contains(&p.to_lowercase()))
             })
-            .take(5)
             .map(|l| l.chars().take(300).collect())
             .collect();
+        let start = lines.len().saturating_sub(6);
+        lines.drain(..start);
+        lines.reverse();
         if !lines.is_empty() {
             out.push(Finding {
                 rule: rule.id,

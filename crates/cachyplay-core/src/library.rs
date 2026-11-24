@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 pub enum Badge {
     /// The last launch through CachyPlay failed; a diagnosis is waiting.
     LastFailed,
+    /// The GPU driver crashed while this game was running (from the kernel log).
+    Crashed,
     /// CachyPlay is on for this game.
     Ready,
     /// A fix file exists but CachyPlay is off.
@@ -46,6 +48,8 @@ pub struct GameSummary {
     pub fix_tested: bool,
     pub user_tweaks: bool,
     pub last_failed: bool,
+    /// GPU driver crashes while this game ran (this boot and the previous one).
+    pub gpu_crashes: usize,
     pub anti_cheat: Option<String>,
     pub badge: Badge,
 }
@@ -58,6 +62,22 @@ pub struct Overview {
     pub steam: Option<SteamInfo>,
     pub steam_error: Option<String>,
     pub games: Vec<GameSummary>,
+    /// Set when GPU driver crashes hit several different programs (a driver or system problem).
+    pub system_crashes: Option<SystemCrashes>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemCrashes {
+    pub crashes: usize,
+    /// Names of the programs that crashed (game names, or the process name if unknown).
+    pub programs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CrashInfo {
+    /// "18:34" today, else "Nov 22 18:34".
+    pub when: String,
+    pub what: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,6 +119,10 @@ pub struct GameDetail {
     pub pipeline: Vec<PipelineNode>,
     pub launches: Vec<LaunchRecord>,
     pub install_dir: String,
+    /// Steam launch options that keep this game's settings without CachyPlay (None: nothing to keep).
+    pub standalone_launch_options: Option<String>,
+    /// GPU driver crashes while this game ran, newest first.
+    pub crashes: Vec<CrashInfo>,
 }
 
 /// The installed `cachyplay` command (what Steam's launch options point to).
@@ -143,7 +167,85 @@ fn find_recipe(paths: &Paths, app_id: &str) -> Option<Recipe> {
         .flatten()
 }
 
+/// How many GPU crashes each game had (this boot and the previous one).
+pub fn crash_counts(ctx: &Ctx) -> std::collections::BTreeMap<String, usize> {
+    counts(&current_events(ctx))
+}
+
+fn current_events(ctx: &Ctx) -> Vec<crate::crashmatch::CrashEvent> {
+    let logs = crate::evidence::kernel_logs();
+    crate::evidence::crash_events(&ctx.paths, Some(ctx), &logs, crate::crashmatch::now_local())
+}
+
+fn counts(events: &[crate::crashmatch::CrashEvent]) -> std::collections::BTreeMap<String, usize> {
+    let mut m = std::collections::BTreeMap::new();
+    for e in events {
+        if let Some(id) = &e.app_id {
+            *m.entry(id.clone()).or_insert(0) += 1;
+        }
+    }
+    m
+}
+
+fn system_crashes(ctx: &Ctx, events: &[crate::crashmatch::CrashEvent]) -> Option<SystemCrashes> {
+    if !crate::crashmatch::several_programs(events) {
+        return None;
+    }
+    let mut programs: Vec<String> = Vec::new();
+    for e in events {
+        let name = match &e.app_id {
+            Some(id) => ctx
+                .steam
+                .find_game(id)
+                .map(|g| g.name)
+                .unwrap_or_else(|| format!("AppID {id}")),
+            None => format!(
+                "\"{}\"",
+                e.faults[0]
+                    .process
+                    .clone()
+                    .unwrap_or_else(|| "unknown".into())
+            ),
+        };
+        if !programs.contains(&name) {
+            programs.push(name);
+        }
+    }
+    Some(SystemCrashes {
+        crashes: events.len(),
+        programs,
+    })
+}
+
+/// Plain-English description of one crash event.
+fn describe_crash(e: &crate::crashmatch::CrashEvent) -> String {
+    let codes: Vec<u32> = e.faults.iter().filter_map(|f| f.xid).collect();
+    if codes.contains(&109) && codes.contains(&31) {
+        "Graphics work hung, then read missing GPU memory".into()
+    } else if let Some(x) = codes.first() {
+        let m = crate::crashmatch::xid_meaning(*x);
+        let mut c = m.chars();
+        c.next()
+            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+            .unwrap_or_default()
+    } else {
+        "The graphics driver reported a fault".into()
+    }
+}
+
+fn crash_when(at: chrono::NaiveDateTime) -> String {
+    if at.date() == crate::crashmatch::now_local().date() {
+        at.format("%H:%M").to_string()
+    } else {
+        at.format("%b %-d %H:%M").to_string()
+    }
+}
+
 pub fn summary(ctx: &Ctx, game: &Game) -> GameSummary {
+    summary_with(ctx, game, 0)
+}
+
+pub fn summary_with(ctx: &Ctx, game: &Game, gpu_crashes: usize) -> GameSummary {
     let status = ctx.status(game).ok();
     let recipe = find_recipe(&ctx.paths, &game.app_id);
     let enabled = status.as_ref().is_some_and(|s| s.applied);
@@ -157,6 +259,8 @@ pub fn summary(ctx: &Ctx, game: &Game) -> GameSummary {
     let has_fix = recipe.is_some();
     let badge = if last_failed {
         Badge::LastFailed
+    } else if gpu_crashes > 0 {
+        Badge::Crashed
     } else if enabled {
         Badge::Ready
     } else if has_fix {
@@ -174,6 +278,7 @@ pub fn summary(ctx: &Ctx, game: &Game) -> GameSummary {
         fix_tested: recipe.as_ref().is_some_and(|r| r.tested),
         user_tweaks,
         last_failed,
+        gpu_crashes,
         anti_cheat: recipe.and_then(|r| r.anti_cheat),
         badge,
     }
@@ -182,19 +287,31 @@ pub fn summary(ctx: &Ctx, game: &Game) -> GameSummary {
 pub fn overview(paths: &Paths, ctx: Result<&Ctx, String>) -> Overview {
     let installed_cli = installed_cli(paths).map(|p| p.display().to_string());
     match ctx {
-        Ok(ctx) => Overview {
-            version: crate::VERSION.into(),
-            installed_cli,
-            steam: Some(steam_info(ctx)),
-            steam_error: None,
-            games: ctx.steam.games().iter().map(|g| summary(ctx, g)).collect(),
-        },
+        Ok(ctx) => {
+            let events = current_events(ctx);
+            Overview {
+                version: crate::VERSION.into(),
+                installed_cli,
+                steam: Some(steam_info(ctx)),
+                steam_error: None,
+                games: {
+                    let crashes = counts(&events);
+                    ctx.steam
+                        .games()
+                        .iter()
+                        .map(|g| summary_with(ctx, g, crashes.get(&g.app_id).copied().unwrap_or(0)))
+                        .collect()
+                },
+                system_crashes: system_crashes(ctx, &events),
+            }
+        }
         Err(e) => Overview {
             version: crate::VERSION.into(),
             installed_cli,
             steam: None,
             steam_error: Some(e),
             games: vec![],
+            system_crashes: None,
         },
     }
 }
@@ -295,9 +412,54 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
         }
     }
 
+    for f in crate::fixes::load(&ctx.paths, &game.app_id).fixes {
+        let technical: Vec<String> = f
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .chain(f.args.iter().cloned())
+            .collect();
+        changes.push(ChangeRow {
+            setting: f.label.clone(),
+            technical: Some(technical.join(" ")),
+            stock: "Off".into(),
+            cachyplay: "On".into(),
+            why: if f.temporary {
+                "A fix you applied from a suggestion. Temporary: undo it once you've saved a bug report.".into()
+            } else {
+                "A fix you applied from a suggestion. Undo it any time under Suggested fixes.".into()
+            },
+            status: "fix".into(),
+        });
+    }
     let launches = recent_launches(&ctx.paths, &game.app_id, 5);
+    let events = current_events(ctx);
+    let crash_list: Vec<CrashInfo> = events
+        .iter()
+        .filter(|e| e.app_id.as_deref() == Some(game.app_id.as_str()))
+        .map(|e| CrashInfo {
+            when: crash_when(e.at),
+            what: describe_crash(e),
+        })
+        .collect();
+    let crashes = crash_list.len();
+    let keepable = crate::keep::settings_for(ctx, game, facts);
+    let standalone_launch_options = (!keepable.is_empty()).then(|| {
+        let current = ctx
+            .launch_options(&game.app_id)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        crate::keep::standalone_launch_options(
+            &current,
+            &keepable,
+            sys::which("game-performance").is_some(),
+        )
+    });
     GameDetail {
-        summary: summary(ctx, game),
+        standalone_launch_options,
+        crashes: crash_list,
+        summary: summary_with(ctx, game, crashes),
         launch_options: status
             .as_ref()
             .map(|s| s.launch_options.clone())

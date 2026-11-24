@@ -36,7 +36,7 @@ The desktop app needs WebKitGTK (`webkit2gtk-4.1`), which CachyOS installs with 
 
 ## Use
 
-Open **CachyPlay** from your app menu. Pick a game, read what CachyPlay would change and why, and flip the switch. Then start the game from Steam as usual. If a launch fails, the game shows a "Last launch failed" badge with a button to save a bug report.
+Open **CachyPlay** from your app menu. Your games are listed on the left; any that crashed recently are pinned at the top under **Needs attention**. Pick a game and CachyPlay tells you in one sentence how it's doing, with one main button for the next step (for example **Apply recommended fix** or **Turn on CachyPlay**). The **Fixes** tab lists every suggestion, the **Settings** tab shows exactly what CachyPlay changes and why, and **History** lists crashes and launches. Then start the game from Steam as usual. The bug icon at the top right saves and lists bug reports; the gear icon opens settings, updates and uninstall.
 
 Close Steam before turning games on or off: Steam rewrites its settings when it exits and would undo the change. The app tells you when Steam is open.
 
@@ -79,6 +79,19 @@ When the game starts, CachyPlay applies the game's fix file (environment variabl
 
 CachyPlay collects no telemetry. In later versions its only network requests are checking GitHub for fix-file and app updates. Bug reports stay on your machine until you choose to share them. Before a report is written, your home folder path, username, Steam IDs, Steam name, hostname and anything that looks like a token are removed from it.
 
+## Suggested fixes
+
+When a game crashes, CachyPlay works out what to try, on your PC, with no AI and no internet. It looks at:
+
+- GPU driver errors in the kernel log, and which game was running each time
+- whether **several different games** are crashing (a driver or system problem) or only one (a game problem)
+- Vulkan add-ons that load into every game (frame generation, upscalers, overlays)
+- recent driver upgrades, when the game last updated, and the game's own logs (Proton, Unity)
+
+Each suggestion lists the evidence behind it. Fixes for one game (such as turning off Vulkan add-ons for that game, or starting it in a window) are one click and can be undone. System-wide steps (rolling back a driver, resetting GPU clocks) are explained, never done automatically. After you play again, the suggestion shows whether it worked.
+
+From the terminal: `cachyplay suggest <appid>`, `cachyplay fix <appid> <id>`, `cachyplay fix <appid> <id> --undo`.
+
 ## Updates
 
 CachyPlay checks GitHub for a newer version when it starts, and never interrupts you. When one exists, a small **Update available** button appears at the top. Click it to read what's new, then **Update now**. Two clicks, then restart CachyPlay.
@@ -97,9 +110,11 @@ Use **Save bug report** on a game to capture that game's logs, or the **Bug repo
 ## Uninstall
 
 ```bash
-cachyplay uninstall            # restores every game first, then removes CachyPlay's files
+cachyplay uninstall --keep-settings   # keeps working game settings in Steam, then removes CachyPlay
 sudo pacman -Rns cachyplay     # only if you installed from the AUR
 ```
+
+**Keep what works:** with `--keep-settings` (on by default in the app), each game's working settings, such as a fix you applied, are written straight into its Steam launch options before CachyPlay is removed, so the game keeps running the same way. A copy goes to `CachyPlay game settings.txt` on your Desktop. You can see and copy every game's settings any time in Settings → Your game settings, or with `cachyplay settings`.
 
 Save and config backups are kept unless you pass `--remove-backups`. Bug reports on your Desktop are never deleted. You can also uninstall from the app: Settings → Uninstall CachyPlay.
 
@@ -117,7 +132,9 @@ These behaviours can't be tested in CI and must be checked once on a real CachyO
 
 1. **Steam runs launch options through a shell.** Apply CachyPlay to a game, launch it, and confirm a record appears in `~/.local/state/cachyplay/launches/`.
 2. **Fail open with a missing binary.** Temporarily rename the installed binary, launch the game from Steam, and confirm it still starts. Then restore the name.
-3. **Steam keeps the edit.** Apply with Steam closed, open Steam, and confirm the launch options in the game's Properties match.
+3. **Bug reports name the game.** Start a game from Steam, then save a general bug report: its summary should name that game under "GPU crashes" if a GPU error happened. This relies on Steam's `logs/console_log.txt` containing "Game process added : AppID …" lines.
+4. **Turning off Vulkan add-ons reaches the game.** Apply "Turn off the extra Vulkan add-ons" to a game, start it with MangoHud or a frame-generation layer that's normally on, and confirm it's gone. This checks that `VK_LOADER_LAYERS_DISABLE` passes through Steam's runtime container.
+5. **Steam keeps the edit.** Apply with Steam closed, open Steam, and confirm the launch options in the game's Properties match.
 
 ## Build from source
 

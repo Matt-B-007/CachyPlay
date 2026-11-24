@@ -39,6 +39,8 @@ pub struct Game {
     pub install_dir: PathBuf,
     pub library: PathBuf,
     pub build_id: String,
+    /// When Steam last updated the game (unix time from the app manifest).
+    pub last_updated: Option<i64>,
 }
 
 impl Steam {
@@ -208,6 +210,7 @@ impl Steam {
                     install_dir: lib.join("steamapps/common").join(get("installdir")),
                     name: get("name"),
                     build_id: get("buildid"),
+                    last_updated: get("LastUpdated").parse().ok(),
                     library: lib.clone(),
                     app_id,
                 });
@@ -215,6 +218,71 @@ impl Steam {
         }
         games.sort_by_key(|g| g.name.to_lowercase());
         games
+    }
+
+    /// The compatibility tool chosen for a game in Steam (e.g. "proton_experimental"),
+    /// or None when Steam's default is used.
+    pub fn compat_tool(&self, app_id: &str) -> Option<String> {
+        let text = fs::read_to_string(self.root.join("config/config.vdf")).ok()?;
+        let doc = Doc::parse(&text).ok()?;
+        let name = doc.get_str(&[
+            "InstallConfigStore",
+            "Software",
+            "Valve",
+            "Steam",
+            "CompatToolMapping",
+            app_id,
+            "name",
+        ])?;
+        (!name.is_empty()).then(|| name.to_string())
+    }
+
+    /// Steam's own console log (current and previous run), used to see which game was running when.
+    pub fn console_logs(&self) -> String {
+        let mut out = String::new();
+        for name in [
+            "console_log.previous.txt",
+            "console_log.txt",
+            "console-linux.txt",
+        ] {
+            if let Ok(t) = fs::read(self.root.join("logs").join(name)) {
+                out.push_str(&String::from_utf8_lossy(&t));
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// The game's Proton prefix, if it runs through Proton.
+    pub fn compatdata(&self, game: &Game) -> Option<PathBuf> {
+        let p = game.library.join("steamapps/compatdata").join(&game.app_id);
+        p.is_dir().then_some(p)
+    }
+
+    /// Unity games write Player.log (and Player-prev.log) inside the Proton prefix.
+    pub fn unity_logs(&self, game: &Game) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let base = match self.compatdata(game) {
+            Some(c) => c.join("pfx/drive_c/users/steamuser/AppData/LocalLow"),
+            None => return out,
+        };
+        let Ok(companies) = fs::read_dir(&base) else {
+            return out;
+        };
+        for company in companies.flatten() {
+            let Ok(products) = fs::read_dir(company.path()) else {
+                continue;
+            };
+            for product in products.flatten() {
+                for name in ["Player.log", "Player-prev.log"] {
+                    let p = product.path().join(name);
+                    if p.is_file() {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn find_game(&self, app_id: &str) -> Option<Game> {

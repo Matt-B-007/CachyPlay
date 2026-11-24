@@ -61,6 +61,8 @@ pub enum Outcome {
     /// The user edited launch options after CachyPlay did; only CachyPlay's part was removed.
     RemovedKeptUserEdits,
     NothingToUndo,
+    /// CachyPlay was removed and its settings written straight into Steam's launch options.
+    Kept,
 }
 
 #[derive(Debug)]
@@ -251,6 +253,18 @@ impl Ctx {
         }
         self.forget(app_id);
         Ok(outcome)
+    }
+
+    /// Replace CachyPlay's launch helper with the plain launch options that keep the game's
+    /// settings, then stop managing the game.
+    pub fn keep_settings(&self, app_id: &str, launch_options: &str) -> Result<Outcome> {
+        self.require_editable()?;
+        if launch_options::is_applied(launch_options) {
+            bail!("refusing to keep launch options that still need CachyPlay");
+        }
+        self.write_launch_options(app_id, launch_options)?;
+        self.forget(app_id);
+        Ok(Outcome::Kept)
     }
 
     fn forget(&self, app_id: &str) {

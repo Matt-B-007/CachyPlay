@@ -156,6 +156,11 @@ fn open_folder(path: String) -> CmdResult<()> {
 }
 
 fn restore_everything(p: &Paths) -> CmdResult<Vec<String>> {
+    restore_everything_with(p, false)
+}
+
+/// Restore every managed game; with `keep`, games with settings get them written into Steam.
+fn restore_everything_with(p: &Paths, keep: bool) -> CmdResult<Vec<String>> {
     let accounts = touched_accounts(p);
     if accounts.is_empty() {
         return Ok(vec![]); // nothing was ever changed; Steam isn't needed
@@ -167,12 +172,26 @@ fn restore_everything(p: &Paths) -> CmdResult<Vec<String>> {
     let mut lines = Vec::new();
     for account in accounts {
         let c = base.for_account(&account);
+        let kept: std::collections::BTreeMap<String, String> = if keep {
+            cachyplay_core::keep::all(&c)
+                .into_iter()
+                .map(|g| (g.app_id, g.launch_options))
+                .collect()
+        } else {
+            Default::default()
+        };
         for app in c.managed_apps() {
             let name = c
                 .steam
                 .find_game(&app)
                 .map(|g| g.name)
                 .unwrap_or_else(|| app.clone());
+            if let Some(lo) = kept.get(&app) {
+                c.keep_settings(&app, lo)
+                    .map_err(|e| format!("{name}: {e:#}"))?;
+                lines.push(format!("{name}: settings kept in Steam"));
+                continue;
+            }
             match c.undo(&app) {
                 Ok(Outcome::RemovedKeptUserEdits) => {
                     lines.push(format!("{name}: restored (your edits kept)"))
@@ -191,17 +210,67 @@ fn restore_all() -> CmdResult<Vec<String>> {
 }
 
 #[tauri::command]
-fn uninstall(remove_backups: bool) -> CmdResult<String> {
+fn game_settings_all() -> CmdResult<Vec<cachyplay_core::keep::GameSettings>> {
     let p = paths()?;
-    let restored = restore_everything(&p)?;
+    Ok(cachyplay_core::keep::all(&ctx(&p)?))
+}
+
+#[tauri::command]
+fn export_settings() -> CmdResult<String> {
+    let p = paths()?;
+    let games = cachyplay_core::keep::all(&ctx(&p)?);
+    let file = p.report_dir().join("CachyPlay game settings.txt");
+    std::fs::write(&file, cachyplay_core::keep::export_text(&games)).map_err(|e| e.to_string())?;
+    Ok(file.display().to_string())
+}
+
+#[tauri::command]
+fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
+    let p = paths()?;
+    let mut saved = None;
+    if keep_settings {
+        if let Ok(c) = Ctx::for_restore(p.clone()) {
+            let games = cachyplay_core::keep::all(&c);
+            if !games.is_empty() {
+                let file = p.report_dir().join("CachyPlay game settings.txt");
+                std::fs::write(&file, cachyplay_core::keep::export_text(&games))
+                    .map_err(|e| e.to_string())?;
+                saved = Some(file);
+            }
+        }
+    }
+    let restored = restore_everything_with(&p, keep_settings)?;
     install::remove_user_files(&p, remove_backups).map_err(|e| format!("{e:#}"))?;
     let exe = std::env::current_exe().unwrap_or_default();
-    let games = match restored.len() {
-        0 => "No games needed restoring".to_string(),
-        1 => "Restored 1 game".to_string(),
-        n => format!("Restored {n} games"),
+    let kept = restored
+        .iter()
+        .filter(|l| l.ends_with("settings kept in Steam"))
+        .count();
+    let back = restored.len() - kept;
+    let count = |n: usize| {
+        if n == 1 {
+            "1 game".to_string()
+        } else {
+            format!("{n} games")
+        }
     };
-    let mut msg = format!("{games} and removed CachyPlay's files.");
+    let games = match (kept, back) {
+        (0, 0) => "No games needed changes".to_string(),
+        (0, b) => format!("Restored {}", count(b)),
+        (k, 0) => format!("Kept the working settings of {} in Steam", count(k)),
+        (k, b) => format!(
+            "Kept the working settings of {} in Steam, restored {}",
+            count(k),
+            count(b)
+        ),
+    };
+    let mut msg = format!("{games}, and removed CachyPlay's files.");
+    if let Some(f) = saved {
+        msg.push_str(&format!(
+            " A copy of your game settings is at {}.",
+            f.display()
+        ));
+    }
     if exe.starts_with("/usr") {
         msg.push_str(" Finish by removing the package in a terminal: sudo pacman -Rns cachyplay");
     } else {
@@ -226,6 +295,49 @@ fn install_self() -> CmdResult<String> {
         "Installed to {}. You can delete the downloaded folder and open CachyPlay from your app menu.",
         bin.parent().map(|d| d.display().to_string()).unwrap_or_default()
     ))
+}
+
+/* ---------- suggested fixes ---------- */
+
+#[tauri::command]
+async fn game_suggestions(app_id: String) -> CmdResult<Vec<cachyplay_core::advice::Suggestion>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths()?;
+        let c = ctx(&p)?;
+        let g = c
+            .steam
+            .find_game(&app_id)
+            .ok_or_else(|| format!("Game {app_id} is not installed"))?;
+        Ok(cachyplay_core::advice::for_game(&c, &g))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn apply_fix(app_id: String, id: String) -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths()?;
+        let c = ctx(&p)?;
+        let g = c
+            .steam
+            .find_game(&app_id)
+            .ok_or_else(|| format!("Game {app_id} is not installed"))?;
+        let bin = library::installed_cli(&p);
+        cachyplay_core::advice::apply_suggestion(&c, &g, &id, bin.as_deref())
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn undo_fix(app_id: String, id: String) -> CmdResult<String> {
+    let p = paths()?;
+    match cachyplay_core::fixes::remove(&p, &app_id, &id).map_err(|e| format!("{e:#}"))? {
+        true => Ok("Fix undone. The game starts without it next time.".into()),
+        false => Ok("That fix wasn't applied.".into()),
+    }
 }
 
 /* ---------- updates ---------- */
@@ -327,7 +439,12 @@ fn main() {
             roll_back,
             restart_app,
             saved_reports,
-            open_issue_page
+            open_issue_page,
+            game_suggestions,
+            apply_fix,
+            undo_fix,
+            game_settings_all,
+            export_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running CachyPlay");

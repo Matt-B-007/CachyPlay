@@ -100,7 +100,7 @@ pub fn remove_user_files(paths: &Paths, remove_backups: bool) -> Result<Vec<Path
         paths.config.clone(),
         paths.data.join("recipes"),
     ];
-    for sub in ["snapshots", "changes"] {
+    for sub in ["snapshots", "changes", "fixes"] {
         dirs.push(paths.data.join(sub));
     }
     if remove_backups {

@@ -290,20 +290,22 @@ dependencies = [
 
 [[package]]
 name = "cachyplay"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "cachyplay-core",
  "clap",
  "tempfile",
+ "zip",
 ]
 
 [[package]]
 name = "cachyplay-core"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "chrono",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -313,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "cachyplay-gui"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.6"
 dependencies = [
  "base64 0.22.1",
  "cachyplay-core",

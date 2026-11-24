@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CachyPlay
+GenericName=Game Helper
+Comment=One-click game tuning, crash help and bug reports
+Exec=/usr/bin/cachyplay-gui
+Icon=cachyplay
+Terminal=false
+Categories=Game;Utility;
+Keywords=steam;proton;gaming;cachyos;
+StartupWMClass=cachyplay-gui

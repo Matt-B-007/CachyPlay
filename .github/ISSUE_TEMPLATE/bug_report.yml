@@ -1,0 +1,28 @@
+name: Bug report
+description: A game doesn't work, or CachyPlay did something wrong
+labels: [bug]
+body:
+  - type: input
+    id: game
+    attributes:
+      label: Game and AppID
+      placeholder: Halo Infinite (1240440)
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Bug report zip
+      description: Run `cachyplay report <appid>` and drag the zip from your Desktop here. Personal details are already removed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: CachyPlay version
+      placeholder: output of `cachyplay --version`

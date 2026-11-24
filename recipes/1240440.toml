@@ -1,0 +1,24 @@
+# Halo Infinite. EXAMPLE RECIPE: NOT YET TESTED ON REAL HARDWARE.
+# Keep `tested = false` until someone has played with it on AMD and NVIDIA (see CONTRIBUTING.md).
+# Only general, low-risk settings are included; nothing game-specific has been verified yet.
+schema = 1
+app_id = 1240440
+name = "Halo Infinite"
+tested = false
+anti_cheat = "eac"
+notes = "Multiplayer uses Easy Anti-Cheat; a Steam Linux Runtime (SLR) Proton build is required."
+
+[runner]
+# Applied from CachyPlay 0.2.0 on (set_runner). Listed here so the fallback order is recorded.
+prefer = ["proton-cachyos-slr", "proton_experimental"]
+
+[env]
+PROTON_ENABLE_NVAPI = { value = "1", when = "gpu.vendor == 'nvidia'", why = "Enables NVIDIA DLSS and Reflex" }
+
+[[action]]
+id = "use_game_performance"
+why = "Switches CachyOS to its low-latency gaming profile while the game runs"
+
+[crash]
+# EAC and the launcher take a while; anything shorter than this counts as a failed launch.
+min_runtime_secs = 45

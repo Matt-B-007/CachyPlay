@@ -1,0 +1,50 @@
+# Maintainer: Matt-B-007 (add your email before publishing to the AUR)
+pkgname=cachyplay
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="One-click Linux game tuning, crash help and timestamped bug reports for CachyOS"
+arch=('x86_64')
+url="https://github.com/Matt-B-007/CachyPlay"
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'sh' 'webkit2gtk-4.1' 'gtk3')
+makedepends=('cargo')
+optdepends=(
+  'game-performance: CachyOS low-latency gaming profile while games run'
+  'vulkan-tools: GPU details in bug reports'
+)
+conflicts=('cachyplay-beta')
+provides=('cachyplay')
+install=cachyplay.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "cachyplay.desktop")
+sha256sums=('SKIP'  # replace with the real checksum when publishing (updpkgsums)
+            'SKIP')
+
+prepare() {
+  cd "CachyPlay-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "CachyPlay-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --workspace
+}
+
+check() {
+  cd "CachyPlay-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "CachyPlay-$pkgver"
+  install -Dm755 target/release/cachyplay "$pkgdir/usr/bin/cachyplay"
+  install -Dm755 target/release/cachyplay-gui "$pkgdir/usr/bin/cachyplay-gui"
+  install -Dm644 "$srcdir/cachyplay.desktop" "$pkgdir/usr/share/applications/cachyplay.desktop"
+  install -Dm644 assets/cachyplay.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/cachyplay.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

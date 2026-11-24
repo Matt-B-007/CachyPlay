@@ -1,0 +1,55 @@
+name: Release
+
+# Push a tag to release:  v0.1.0 (stable)  or  v0.2.0-beta.1 (beta, published as a pre-release).
+# Never move or reuse a tag; fix mistakes with a new patch version.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GUI build dependencies (Tauri / WebKitGTK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          base="${tag%%-*}"
+          [ "$base" = "$crate" ] || { echo "Tag $tag does not match Cargo.toml version $crate"; exit 1; }
+
+      - run: cargo test --workspace --locked
+
+      # Generic x86-64: no target-cpu=native, so it runs on every CachyOS/Arch machine.
+      - run: cargo build --workspace --release --locked
+
+      - name: Package
+        run: |
+          name="cachyplay-${GITHUB_REF_NAME}-x86_64-linux"
+          mkdir -p "dist/$name"
+          cp target/release/cachyplay target/release/cachyplay-gui README.md LICENSE CHANGELOG.md "dist/$name/"
+          cp assets/cachyplay.svg "dist/$name/"
+          (cd dist && tar --zstd -cf "$name.tar.zst" "$name" && sha256sum "$name.tar.zst" > SHA256SUMS.txt)
+
+      - name: Release notes from CHANGELOG
+        run: |
+          ver="${GITHUB_REF_NAME#v}"; ver="${ver%%-*}"
+          awk -v v="$ver" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          prerelease: ${{ contains(github.ref_name, '-beta.') }}
+          files: |
+            dist/*.tar.zst
+            dist/SHA256SUMS.txt

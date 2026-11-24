@@ -1,0 +1,18 @@
+# pacman runs these as root with no user session, so they never edit Steam files themselves.
+# Restoring games is done by the user with `cachyplay uninstall` (or `cachyplay restore-all`).
+
+pre_remove() {
+  for d in /home/*/.local/share/cachyplay/changes; do
+    if [ -d "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+      echo ">>> CachyPlay is still turned on for some games (${d%/.local/share/cachyplay/changes})."
+      echo ">>> Games will keep launching normally (fail-open), but to restore their original"
+      echo ">>> launch options, reinstall and run:  cachyplay restore-all"
+      echo ">>> Next time, run 'cachyplay uninstall' before removing the package."
+      break
+    fi
+  done
+}
+
+post_upgrade() {
+  echo ">>> CachyPlay updated to $1. Games already using it pick up the new version automatically."
+}

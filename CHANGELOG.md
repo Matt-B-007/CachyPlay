@@ -9,7 +9,8 @@ v0.1.0-beta.3 (bug reports name the crashing game, privacy fixes),
 v0.1.0-beta.4 (suggested fixes worked out from crashes, logs and your system),
 v0.1.0-beta.5 (see and keep your game settings without CachyPlay),
 v0.1.0-beta.6 (new layout: game list on the left, one clear status and button per game, tabs),
-v0.1.0-beta.7 (one-command installer, working update button, OBS game capture).
+v0.1.0-beta.7 (one-command installer, working update button, OBS game capture),
+v0.1.0-beta.8 (installer falls back to the newest beta; OBS test fix).
 
 ### Added
 - One-command installer (beta.7): `sh install.sh` in the unzipped folder. It downloads the
@@ -73,6 +74,9 @@ v0.1.0-beta.7 (one-command installer, working update button, OBS game capture).
   default in the app; `cachyplay uninstall --keep-settings` in the terminal.
 
 ### Fixed
+- Installer (beta.8): when no stable release exists yet, it installs the newest beta instead of
+  stopping with "Couldn't find a CachyPlay release", and its error now says why nothing was found.
+- Tests (beta.8): the OBS capture test no longer fails on PCs that have obs-vkcapture installed.
 - Updates (beta.7): Settings → Updates now has an **Update to v…** button (before, it only said an
   update existed). Beta builds follow the Beta channel until you pick one, so they see newer betas;
   on Stable, a newer beta is offered with **Switch to Beta and update**. When nothing has been

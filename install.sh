@@ -69,21 +69,16 @@ ask() { # ask "Question?" -> 0 for yes. Reads the keyboard even when this script
 
 gh_ok() { have gh && gh auth status >/dev/null 2>&1; }
 
-# Print the tag of the release to install (empty if none can be found).
-pick_tag() {
-    want="$1" # a specific tag, or empty for the newest on $CHANNEL
-    if [ -n "$want" ]; then
-        echo "$want"
-        return
-    fi
+# Print the newest release tag on a channel ("stable" or "beta"); empty if there is none.
+newest_tag() {
     if gh_ok; then
-        if [ "$CHANNEL" = beta ]; then
+        if [ "$1" = beta ]; then
             gh api "repos/$REPO/releases?per_page=30" --jq '[.[] | select(.draft | not)][0].tag_name // empty' 2>/dev/null || true
         else
             gh api "repos/$REPO/releases?per_page=30" --jq '[.[] | select((.draft | not) and (.prerelease | not))][0].tag_name // empty' 2>/dev/null || true
         fi
     elif have curl; then
-        if [ "$CHANNEL" = beta ]; then
+        if [ "$1" = beta ]; then
             url="https://api.github.com/repos/$REPO/releases?per_page=1"
         else
             url="https://api.github.com/repos/$REPO/releases/latest"
@@ -91,6 +86,21 @@ pick_tag() {
         curl -fsSL -A cachyplay-installer "$url" 2>/dev/null |
             grep -o '"tag_name": *"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/' || true
     fi
+}
+
+# Print the tag of the release to install (empty if none can be found).
+pick_tag() {
+    if [ -n "$1" ]; then
+        echo "$1"
+        return
+    fi
+    tag=$(newest_tag "$CHANNEL")
+    if [ -z "$tag" ] && [ "$CHANNEL" = stable ]; then
+        # No stable release yet (CachyPlay is in beta): use the newest beta.
+        tag=$(newest_tag beta)
+        [ -z "$tag" ] || warn "There's no stable release yet, so installing the newest beta."
+    fi
+    echo "$tag"
 }
 
 # Download and unpack a release build into $TMP. Prints the unpacked folder; fails quietly.
@@ -196,7 +206,7 @@ if [ "$FROM_SOURCE" = 0 ]; then
         if have gh && ! gh_ok; then
             die "Couldn't reach CachyPlay on GitHub. While the repository is private, sign in first: gh auth login"
         fi
-        die "Couldn't find a CachyPlay release on GitHub. Download the zip from GitHub, unzip it, and run: sh install.sh"
+        die "No CachyPlay release has been published on GitHub yet. A release is built when a version tag (like v0.1.0-beta.7) is pushed; check the Actions tab on GitHub. Until then, download the zip from GitHub, unzip it, and run: sh install.sh"
     fi
 fi
 

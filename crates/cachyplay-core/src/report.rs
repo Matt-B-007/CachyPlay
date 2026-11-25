@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(a.path.parent().unwrap(), f.home().join("Desktop"));
         let mut z = zip::ZipArchive::new(fs::File::open(&a.path).unwrap()).unwrap();
         let names: Vec<String> = (0..z.len())
-            .map(|i| z.by_index(i).unwrap().name().to_string())
+            .map(|i| z.by_index(i).unwrap().name().unwrap().to_string())
             .collect();
         assert!(
             names.iter().any(|n| n.ends_with("00-summary.md")),

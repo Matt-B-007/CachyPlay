@@ -82,10 +82,10 @@ fn line_time(line: &str, now: NaiveDateTime) -> Option<NaiveDateTime> {
     let first = line.split_whitespace().next()?;
     if first.len() >= 19 && first.as_bytes().get(4) == Some(&b'-') {
         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(first) {
-            return Some(dt.with_timezone(&Local).naive_local());
+            return Some(dt.naive_local());
         }
         if let Ok(dt) = chrono::DateTime::parse_from_str(first, "%Y-%m-%dT%H:%M:%S%z") {
-            return Some(dt.with_timezone(&Local).naive_local());
+            return Some(dt.naive_local());
         }
     }
     let mut it = line.split_whitespace();
@@ -197,7 +197,6 @@ pub fn sessions_from_launches(records: &[LaunchRecord]) -> Vec<Session> {
         .filter_map(|r| {
             let start = chrono::DateTime::parse_from_rfc3339(&r.started_at)
                 .ok()?
-                .with_timezone(&Local)
                 .naive_local();
             let end = (!r.running)
                 .then(|| start + chrono::Duration::milliseconds((r.runtime_secs * 1000.0) as i64));

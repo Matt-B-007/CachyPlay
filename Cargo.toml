@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/cachyplay-core", "crates/cachyplay", "crates/cachyplay-gui"]
 
 [workspace.package]
-version = "0.1.0-beta.9"
+version = "0.1.0-beta.10"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/Matt-B-007/CachyPlay"
@@ -15,9 +15,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1"
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tempfile = "3"
 
 [profile.release]

@@ -130,7 +130,7 @@ pub fn driver_updates(pacman_log: &str) -> Vec<DriverUpdate> {
                 .trim_end_matches(')')
                 .split_once(" -> ")?;
             let at = chrono::DateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S%z")
-                .map(|d| d.with_timezone(&chrono::Local).naive_local())
+                .map(|d| d.naive_local())
                 .or_else(|_| NaiveDateTime::parse_from_str(stamp, "%Y-%m-%d %H:%M"))
                 .ok()?;
             Some(DriverUpdate {

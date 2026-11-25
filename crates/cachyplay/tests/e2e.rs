@@ -259,7 +259,7 @@ fn general_report_names_the_crashing_games() {
     let mut z = zip::ZipArchive::new(fs::File::open(&zip_path).unwrap()).unwrap();
     let mut read = |suffix: &str| {
         let name = (0..z.len())
-            .map(|i| z.by_index(i).unwrap().name().to_string())
+            .map(|i| z.by_index(i).unwrap().name().unwrap().to_string())
             .find(|n| n.ends_with(suffix))
             .unwrap_or_else(|| panic!("no {suffix}"));
         let mut s = String::new();
@@ -304,7 +304,7 @@ fn general_report_names_the_crashing_games() {
         .unwrap();
     let mut z = zip::ZipArchive::new(fs::File::open(&moon_zip).unwrap()).unwrap();
     let names: Vec<String> = (0..z.len())
-        .map(|i| z.by_index(i).unwrap().name().to_string())
+        .map(|i| z.by_index(i).unwrap().name().unwrap().to_string())
         .collect();
     assert!(
         names.iter().any(|n| n.ends_with("logs/unity-Player.log")),

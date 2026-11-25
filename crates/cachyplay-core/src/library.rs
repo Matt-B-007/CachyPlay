@@ -310,7 +310,7 @@ fn set_lights(ctx: &Ctx, games: &mut [GameSummary], events: &[CrashEvent]) {
             .iter()
             .filter(|f| f.verdict != Some(false) && !f.temporary)
             .filter_map(|f| chrono::DateTime::parse_from_rfc3339(&f.applied_at).ok())
-            .map(|t| t.with_timezone(&chrono::Local).naive_local())
+            .map(|t| t.naive_local())
             .max();
         let last_crash = events
             .iter()

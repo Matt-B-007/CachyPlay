@@ -11,7 +11,8 @@ v0.1.0-beta.5 (see and keep your game settings without CachyPlay),
 v0.1.0-beta.6 (new layout: game list on the left, one clear status and button per game, tabs),
 v0.1.0-beta.7 (one-command installer, working update button, OBS game capture),
 v0.1.0-beta.8 (installer falls back to the newest beta; OBS test fix),
-v0.1.0-beta.9 (plain-language diagnosis, Fix it, PC check, Proton history, settings page, themes).
+v0.1.0-beta.9 (plain-language diagnosis, Fix it, PC check, Proton history, settings page, themes),
+v0.1.0-beta.10 (crash times no longer depend on the PC's time zone; dependency updates).
 
 ### Added
 - **Three-line summary (beta.9)** at the top of every game: what happened, why (with how sure
@@ -121,6 +122,12 @@ v0.1.0-beta.9 (plain-language diagnosis, Fix it, PC check, Proton history, setti
   automatic dependency updates; `scripts/release-check.sh`, RELEASING.md and SUPPORT.md.
 
 ### Fixed
+- Crash times (beta.10) are kept as the wall-clock time they were written, like Steam's own log,
+  instead of being converted to the PC's current time zone. Before, a time-zone or daylight-saving
+  change could stop crashes from lining up with the game that was running; it also made two tests
+  fail on GitHub's UTC machines. Tests now also run in another time zone in CI.
+- Dependencies updated (beta.10): zip 9, toml 1, base64 0.23, minisign-verify 0.3,
+  actions/checkout v7, action-gh-release v3.
 - Launches are recorded when they start (beta.9), so a game that hangs after a GPU crash shows as
   "running or stopped responding" instead of "CachyPlay isn't turned on".
 - The driver-update list includes every NVIDIA package (nvidia-utils, lib32-nvidia-utils,

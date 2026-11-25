@@ -154,7 +154,7 @@ impl Evidence {
             .collect();
         let applied_at = chrono::DateTime::parse_from_rfc3339(&fix.applied_at)
             .ok()
-            .map(|d| d.with_timezone(&chrono::Local).naive_local());
+            .map(|d| d.naive_local());
         let crashed_since = applied_at.is_some_and(|t| self.game_events().iter().any(|e| e.at > t));
         if crashed_since || since.iter().any(|l| l.failed) {
             Status::DidntHelp
@@ -687,7 +687,7 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
         }
         let applied = chrono::DateTime::parse_from_rfc3339(&f.applied_at)
             .ok()
-            .map(|d| d.with_timezone(&chrono::Local).naive_local());
+            .map(|d| d.naive_local());
         let played_since = ev
             .launches
             .iter()
@@ -1005,7 +1005,7 @@ pub fn gather(
         game_updated: game
             .last_updated
             .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
-            .map(|t| t.with_timezone(&chrono::Local).naive_local()),
+            .map(|t| t.naive_local()),
         events,
         names,
         layers: vklayers::detect(&paths.home),

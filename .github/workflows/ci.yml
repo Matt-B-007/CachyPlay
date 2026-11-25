@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install GUI build dependencies (Tauri / WebKitGTK)
         run: |
           sudo apt-get update
@@ -35,7 +35,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust webkit2gtk-4.1 librsvg openssl xdotool
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Test as a normal user (some tests check file permissions)
         run: |
           useradd -m builder

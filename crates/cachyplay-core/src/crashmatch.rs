@@ -31,6 +31,25 @@ pub struct Session {
     pub start: NaiveDateTime,
     pub end: Option<NaiveDateTime>,
     pub source: &'static str,
+    /// The compatibility tool Steam started it with (folder name, e.g. "Proton - Experimental",
+    /// "GE-Proton11-12-x86_64"), or None for a native game / unknown.
+    pub tool: Option<String>,
+}
+
+impl Session {
+    /// How long it ran, if it has ended.
+    pub fn duration(&self) -> Option<chrono::Duration> {
+        self.end.map(|e| e - self.start)
+    }
+}
+
+/// The compatibility tool in a Steam command line: the folder that holds the `proton` script.
+/// `…/compatibilitytools.d/GE-Proton11-12-x86_64'/proton waitforexitandrun …` → GE-Proton11-12-x86_64.
+pub fn tool_in_command(line: &str) -> Option<String> {
+    let i = line.find("/proton waitforexitandrun")?;
+    let before = line[..i].trim_end_matches(['\'', '"']);
+    let name = before.rsplit('/').next()?.trim_matches(['\'', '"']);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +171,7 @@ pub fn parse_steam_sessions(text: &str) -> Vec<Session> {
                         start: at,
                         end: None,
                         source: "Steam",
+                        tool: tool_in_command(line),
                     });
                 }
             }
@@ -179,12 +199,14 @@ pub fn sessions_from_launches(records: &[LaunchRecord]) -> Vec<Session> {
                 .ok()?
                 .with_timezone(&Local)
                 .naive_local();
-            let end = start + chrono::Duration::milliseconds((r.runtime_secs * 1000.0) as i64);
+            let end = (!r.running)
+                .then(|| start + chrono::Duration::milliseconds((r.runtime_secs * 1000.0) as i64));
             Some(Session {
                 app_id: r.app_id.clone(),
                 start,
-                end: Some(end),
+                end,
                 source: "CachyPlay",
+                tool: None,
             })
         })
         .collect()

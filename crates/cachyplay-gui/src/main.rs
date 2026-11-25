@@ -129,6 +129,35 @@ fn obs_settings() -> CmdResult<serde_json::Value> {
     }))
 }
 
+/// Force a game to use another compatibility tool (Proton version). Needs Steam closed.
+#[tauri::command]
+fn switch_compat_tool(app_id: String, name: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = c
+        .steam
+        .find_game(&app_id)
+        .ok_or_else(|| format!("Game {app_id} is not installed"))?;
+    let tools = cachyplay_core::compat::installed(&c.steam.root, &c.steam.library_folders());
+    let t = tools
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| format!("{name} isn't installed any more."))?;
+    cachyplay_core::compat::switch(&c, &app_id, t).map_err(|e| format!("{e:#}"))?;
+    Ok(format!(
+        "{} now uses {}. Start it from Steam to try it.",
+        g.name, t.display
+    ))
+}
+
+#[tauri::command]
+fn undo_compat_tool(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    cachyplay_core::compat::undo(&c, &app_id).map_err(|e| format!("{e:#}"))?;
+    Ok("Put the game back on the compatibility tool it used before.".into())
+}
+
 #[tauri::command]
 fn set_enabled(app_id: String, enabled: bool) -> CmdResult<String> {
     let p = paths()?;
@@ -400,13 +429,177 @@ fn undo_fix(app_id: String, id: String) -> CmdResult<String> {
     }
 }
 
+/* ---------- game page: summary, fixes, history, help ---------- */
+
+fn game_of(c: &Ctx, app_id: &str) -> CmdResult<cachyplay_core::steam::Game> {
+    c.steam
+        .find_game(app_id)
+        .ok_or_else(|| format!("Game {app_id} is not installed"))
+}
+
+#[tauri::command]
+async fn game_insights(app_id: String) -> CmdResult<cachyplay_core::advice::Insights> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths()?;
+        let c = ctx(&p)?;
+        let g = game_of(&c, &app_id)?;
+        Ok(cachyplay_core::advice::insights(&c, &g))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// "Fix it": apply the suggestion the summary picked (a fix or a Proton switch).
+#[tauri::command]
+async fn fix_it(app_id: String) -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths()?;
+        let c = ctx(&p)?;
+        let g = game_of(&c, &app_id)?;
+        let ins = cachyplay_core::advice::insights(&c, &g);
+        let Some(id) = ins.summary.fix_id.clone() else {
+            return Err("There's nothing CachyPlay can change with one click for this game right now.".into());
+        };
+        let s = ins.suggestions.iter().find(|s| s.id == id).ok_or("That suggestion is gone; refresh and try again.")?;
+        if let Some(tool) = &s.switch_tool {
+            cachyplay_core::compat::switch(&c, &app_id, tool).map_err(|e| format!("{e:#}"))?;
+            return Ok(format!("Switched {} to {}. Start it from Steam to try it; CachyPlay will ask if it worked.", g.name, tool.display));
+        }
+        let bin = library::installed_cli(&p);
+        cachyplay_core::advice::apply_suggestion(&c, &g, &id, bin.as_deref())
+            .map(|m| format!("{m} CachyPlay will ask if it worked after you play."))
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The answer to "Did it work?".
+#[tauri::command]
+fn set_verdict(app_id: String, id: String, worked: bool) -> CmdResult<String> {
+    let p = paths()?;
+    cachyplay_core::fixes::set_verdict(&p, &app_id, &id, worked).map_err(|e| format!("{e:#}"))?;
+    Ok(if worked {
+        "Great, noted. This fix stays on.".into()
+    } else {
+        "Noted. Try the next suggestion, or undo this one.".into()
+    })
+}
+
+#[tauri::command]
+fn pc_check() -> CmdResult<Vec<cachyplay_core::pccheck::Check>> {
+    let p = paths()?;
+    let libraries = ctx(&p)
+        .map(|c| c.steam.library_folders())
+        .unwrap_or_default();
+    Ok(cachyplay_core::pccheck::pc_checks(
+        &cachyplay_core::pccheck::Root::system(),
+        &libraries,
+    ))
+}
+
+#[tauri::command]
+fn self_test() -> CmdResult<Vec<cachyplay_core::pccheck::Check>> {
+    Ok(cachyplay_core::pccheck::self_test(&paths()?))
+}
+
+#[tauri::command]
+fn reset_prefix(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = game_of(&c, &app_id)?;
+    cachyplay_core::prefix::reset(&c, &g).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("{}'s Windows files were set aside. Steam makes fresh ones the next time you start it. Undo puts the old ones back.", g.name))
+}
+
+#[tauri::command]
+fn undo_prefix_reset(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = game_of(&c, &app_id)?;
+    cachyplay_core::prefix::undo(&c, &g).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("Put {}'s earlier Windows files back.", g.name))
+}
+
+#[tauri::command]
+async fn protondb_rating(app_id: String) -> CmdResult<Option<serde_json::Value>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths()?;
+        if !update::Settings::load(&p).protondb {
+            return Ok(None);
+        }
+        Ok(cachyplay_core::protondb::rating(&p, &app_id).map(|r| {
+            serde_json::json!({"tier": r.tier, "trending": r.trending, "reports": r.reports, "meaning": r.meaning(),
+                "url": format!("https://www.protondb.com/app/{app_id}")})
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn app_settings() -> CmdResult<update::Settings> {
+    Ok(update::Settings::load(&paths()?))
+}
+
+/// Change one display or privacy setting: "protondb", "big_screen" (true/false) or "theme".
+#[tauri::command]
+fn set_app_setting(key: String, value: serde_json::Value) -> CmdResult<()> {
+    let p = paths()?;
+    let mut s = update::Settings::load(&p);
+    match key.as_str() {
+        "protondb" => s.protondb = value.as_bool().unwrap_or(false),
+        "big_screen" => s.big_screen = value.as_bool().unwrap_or(false),
+        "theme" => {
+            s.theme = value
+                .as_str()
+                .filter(|t| ["system", "dark", "light"].contains(t))
+                .map(str::to_string)
+        }
+        _ => return Err(format!("unknown setting {key}")),
+    }
+    s.save(&p).map_err(|e| format!("{e:#}"))
+}
+
+/// KDE's accent color (from ~/.config/kdeglobals), as "#rrggbb", to match the desktop.
+#[tauri::command]
+fn desktop_accent() -> Option<String> {
+    let p = paths().ok()?;
+    let text = std::fs::read_to_string(p.home.join(".config/kdeglobals")).ok()?;
+    let line = text.lines().find(|l| l.starts_with("AccentColor="))?;
+    let rgb: Vec<u8> = line["AccentColor=".len()..]
+        .split(',')
+        .filter_map(|x| x.trim().parse().ok())
+        .collect();
+    (rgb.len() == 3).then(|| format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
+}
+
+#[tauri::command]
+fn open_url(url: String) -> CmdResult<()> {
+    if !(url.starts_with("https://") || url.starts_with("steam://")) {
+        return Err("Only web and Steam links can be opened.".into());
+    }
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Couldn't open the link: {e}"))
+}
+
 /* ---------- updates ---------- */
 
 #[tauri::command]
-async fn update_status() -> CmdResult<update::UpdateStatus> {
-    tauri::async_runtime::spawn_blocking(|| Ok(update::check(&paths()?)))
-        .await
-        .map_err(|e| e.to_string())?
+async fn update_status(force: Option<bool>) -> CmdResult<update::UpdateStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = paths()?;
+        Ok(if force.unwrap_or(true) {
+            update::check(&p)
+        } else {
+            update::check_background(&p)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -482,12 +675,17 @@ fn open_issue_page() -> CmdResult<()> {
 }
 
 fn main() {
+    if let Ok(p) = Paths::from_env() {
+        cachyplay_core::housekeeping::protect_settings(&p);
+    }
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             overview,
             game_detail,
             cover,
             set_enabled,
+            switch_compat_tool,
+            undo_compat_tool,
             set_obs_capture,
             set_obs_all,
             obs_settings,
@@ -504,6 +702,18 @@ fn main() {
             saved_reports,
             open_issue_page,
             game_suggestions,
+            game_insights,
+            fix_it,
+            set_verdict,
+            pc_check,
+            self_test,
+            reset_prefix,
+            undo_prefix_reset,
+            protondb_rating,
+            app_settings,
+            set_app_setting,
+            desktop_accent,
+            open_url,
             apply_fix,
             undo_fix,
             game_settings_all,

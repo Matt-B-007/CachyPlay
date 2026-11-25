@@ -15,7 +15,7 @@ const BADGE_TEXT = {
   ready: "Ready",
   fix_available: "Fix available",
   your_tweaks: "Your tweaks",
-  last_failed: "Last launch failed",
+  last_failed: "Last start failed",
   crashed: "Crashed recently",
   off: "Not set up",
 };
@@ -40,6 +40,8 @@ const $ = (id) => document.getElementById(id);
 
 /* ---------- toasts ---------- */
 function toast(message, kind = "info", action) {
+  // When CachyPlay itself fails, offer the one useful next step.
+  if (kind === "error" && !action) action = { label: "Save bug report", run: () => saveReport(null) };
   const t = h("div", { class: `toast ${kind}` }, h("p", {}, message));
   if (action) t.append(h("button", { class: "secondary", onclick: action.run }, action.label));
   $("toasts").append(t);
@@ -49,7 +51,9 @@ function toast(message, kind = "info", action) {
 /* ---------- loading ---------- */
 state.tab = "overview";
 state.detail = null;
-state.suggestions = new Map();
+state.insights = new Map();
+state.protondb = new Map();
+state.settings = {};
 
 async function load() {
   try {
@@ -74,14 +78,19 @@ function editBlocked() {
   return o.steam.blocked_reason;
 }
 
-const needsAttention = (g) => g.gpu_crashes > 0 || g.last_failed;
+const needsAttention = (g) => g.light === "red" || ((g.gpu_crashes > 0 || g.last_failed) && g.light !== "yellow");
 
 function times(n) {
   return n === 1 ? "once" : `${n} times`;
 }
 
+const LIGHT_TEXT = { green: "Runs fine", yellow: "Works with a fix", red: "Not working", grey: "Not played lately" };
+
 function statusText(g) {
+  if (g.light === "yellow") return g.gpu_crashes > 0 ? "Trying a fix" : "Works with a fix";
   if (g.gpu_crashes > 0) return `Crashed ${times(g.gpu_crashes)}`;
+  if (g.light === "red") return "Not working";
+  if (g.light === "green" || g.light === "yellow") return LIGHT_TEXT[g.light];
   return BADGE_TEXT[g.badge];
 }
 
@@ -118,7 +127,14 @@ function banners() {
       h("p", {}, h("strong", {}, "Steam wasn't found"), o.steam_error || "Install Steam and log in once.")));
   } else if (o.steam.blocked_reason) {
     out.push(h("div", { class: `banner ${o.steam.kind === "flatpak" ? "bad" : "warn"}` },
-      h("p", {}, h("strong", {}, o.steam.kind === "flatpak" ? "Flatpak Steam" : "Steam is open"), o.steam.blocked_reason)));
+      h("p", {}, h("strong", {}, o.steam.kind === "flatpak" ? "Flatpak Steam" : o.steam.running ? "Steam is open" : "Read-only for now"), o.steam.blocked_reason)));
+  }
+  const problems = (state.pcCheck || []).filter((c) => c.level === "bad");
+  if (problems.length) {
+    out.push(h("div", { class: "banner bad" },
+      h("p", {}, h("strong", {}, problems.length === 1 ? problems[0].title : `The PC check found ${problems.length} problems`),
+        problems.length === 1 ? problems[0].detail : problems.map((c) => c.title).join(", ") + "."),
+      h("button", { class: "secondary", onclick: () => { openSettings(); setTimeout(() => $("set-pc").scrollIntoView({ block: "start" }), 50); } }, "See how to fix")));
   }
   const sc = o.system_crashes;
   if (sc) {
@@ -161,7 +177,7 @@ function railItem(g) {
     thumb.replaceChildren(h("img", { src: url, alt: "" }));
   });
   return h("button", {
-    class: `rail-item ${g.badge}`,
+    class: `rail-item ${g.badge} light-${g.light}`,
     "data-app": g.app_id,
     "aria-current": state.selected === g.app_id ? "true" : "false",
     onclick: () => { state.tab = "overview"; showGame(g.app_id); },
@@ -169,7 +185,7 @@ function railItem(g) {
     thumb,
     h("span", { class: "rail-text" },
       h("span", { class: "rail-name" }, g.name),
-      h("span", { class: "rail-status" }, statusText(g))));
+      h("span", { class: "rail-status" }, h("span", { class: `light ${g.light}`, "aria-hidden": "true" }), statusText(g))));
 }
 
 async function loadCover(appId) {
@@ -202,12 +218,18 @@ async function showGame(appId, opts = {}) {
   renderMain();
   if (opts.keepScroll) main.scrollTop = scroll;
   try {
-    const list = await invoke("game_suggestions", { appId });
-    state.suggestions.set(appId, list);
-  } catch {
-    state.suggestions.set(appId, []);
+    state.insights.set(appId, await invoke("game_insights", { appId }));
+  } catch (e) {
+    state.insights.set(appId, { suggestions: [], summary: null, error: String(e) });
   }
   if (state.selected === appId) renderMain();
+  if (state.settings.protondb && !state.protondb.has(appId)) {
+    state.protondb.set(appId, null);
+    invoke("protondb_rating", { appId }).then((r) => {
+      state.protondb.set(appId, r);
+      if (state.selected === appId) renderMain();
+    }).catch(() => {});
+  }
 }
 
 function renderMain() {
@@ -222,47 +244,43 @@ function renderMain() {
   });
 }
 
+function insightsFor(appId) {
+  return state.insights.get(appId);
+}
+
 function suggestionsFor(appId) {
-  return state.suggestions.get(appId);
+  const i = insightsFor(appId);
+  return i ? i.suggestions : undefined;
 }
 
-function topFix(list) {
-  return (list || []).find((s) => s.fix && s.status === "new");
-}
+const LIGHT_LABEL = { green: "Runs fine", yellow: "Works with a fix", red: "Not working", grey: "Not played lately" };
 
-/* The one sentence and one main button at the top of a game. */
+/* The three lines at the top of a game (what happened, why, what to do) and one main button. */
 function hero(d) {
   const s = d.summary;
-  const list = suggestionsFor(s.app_id);
-  // A fix that's applied and not yet proven useless comes first: the next step is to play, not to stack another fix.
-  const appliedFix = (list || []).find((x) => x.fix && (x.status === "applied" || x.status === "worked"));
-  const fix = appliedFix ? null : topFix(list);
+  const ins = insightsFor(s.app_id);
+  const sum = ins && ins.summary;
   const blocked = editBlocked();
   const notInstalled = !state.overview.installed_cli;
+  const light = sum ? sum.light : (s.light || "grey");
 
-  let sentence;
-  let accent = null;
-  let primary = null;
-  if (s.gpu_crashes > 0 || s.last_failed) {
-    sentence = s.gpu_crashes > 0 ? `Crashed ${times(s.gpu_crashes)} recently.` : "The last launch closed early.";
-    if (appliedFix) {
-      accent = appliedFix.status === "worked" ? "The fix you applied is working." : "You applied a fix. Start the game from Steam to try it.";
-      primary = h("button", { class: "primary big", onclick: () => switchTab("fixes") }, "See fixes");
-    } else if (fix) {
-      accent = (list || []).some((x) => x.status === "didnt_help") ? "Another fix is ready." : "A fix is ready.";
-      primary = h("button", { class: "primary big", onclick: (e) => applyFix(s.app_id, fix.id, e.currentTarget) }, "Apply recommended fix");
-    } else if (list === undefined) {
-      accent = "Looking for fixes…";
-    }
-  } else if (s.enabled) {
-    sentence = "Ready. Start it from Steam as usual.";
-  } else if (s.has_fix) {
-    sentence = "A fix file is available for this game.";
-    primary = h("button", { class: "primary big", disabled: !!blocked || notInstalled, title: blocked || "", onclick: () => setEnabled(s.app_id, true) }, "Turn on CachyPlay");
+  let lines;
+  if (!ins) {
+    lines = [h("p", { class: "what" }, "Looking at this game's history…")];
   } else {
-    sentence = "CachyPlay is off for this game.";
+    lines = [
+      h("p", { class: "what" }, sum.what),
+      sum.why ? h("p", { class: "why-line" }, sum.why) : null,
+      sum.todo ? h("p", { class: "todo" }, h("span", { class: "todo-label" }, "What to do: "), sum.todo) : null,
+    ];
+  }
+  let primary = null;
+  if (sum && sum.fix_id) {
+    primary = h("button", { class: "primary big", disabled: state.busy, onclick: (e) => fixIt(s.app_id, e.currentTarget) }, "Fix it");
+  } else if (!s.enabled && light !== "red") {
     primary = h("button", { class: "primary big", disabled: !!blocked || notInstalled, title: blocked || "", onclick: () => setEnabled(s.app_id, true) }, "Turn on CachyPlay");
   }
+  const rating = state.protondb.get(s.app_id);
 
   const canToggle = !blocked && !(notInstalled && !s.enabled);
   const switchNote = blocked ? "Close Steam to change" : notInstalled && !s.enabled ? "Install CachyPlay first" : s.enabled ? "On for this game" : "Off for this game";
@@ -270,11 +288,15 @@ function hero(d) {
   return h("section", { class: "hero" },
     h("div", { class: "hero-cover" }, h("span", {}, s.name.slice(0, 2).toUpperCase())),
     h("div", { class: "hero-text" },
-      h("h1", {}, s.name),
-      h("p", { class: "sentence" }, sentence, accent ? " " : null, accent ? h("span", { class: "accent" }, accent) : null),
+      h("div", { class: "hero-title" },
+        h("h1", {}, s.name),
+        h("span", { class: `light-chip ${light}` }, h("span", { class: `light ${light}` }), LIGHT_LABEL[light]),
+        rating ? h("button", { class: `protondb ${rating.tier}`, title: `${rating.meaning} (${rating.reports} reports on ProtonDB)`, onclick: () => openUrl(rating.url) }, `ProtonDB: ${rating.tier}`) : null),
+      ...lines,
       h("div", { class: "hero-actions" },
         primary,
-        h("button", { class: primary ? "secondary big" : "primary big", onclick: () => saveReport(s.app_id) }, "Save bug report"))),
+        h("button", { class: primary ? "secondary big" : "primary big", onclick: () => saveReport(s.app_id) }, "Save bug report"),
+        sum && sum.fix_id ? h("span", { class: "fix-caption" }, `Fix it tries: ${sum.fix_label}. You can undo it.`) : null)),
     h("div", { class: "switch-card" },
       h("span", { class: "switch-label" }, h("strong", {}, "CachyPlay"), h("span", {}, switchNote)),
       h("button", {
@@ -332,14 +354,27 @@ function card(cls, ...kids) {
 
 function overviewTab(d) {
   const s = d.summary;
-  const list = suggestionsFor(s.app_id);
+  const ins = insightsFor(s.app_id);
+  const list = ins ? ins.suggestions : undefined;
+  const out = [];
+
+  // "Did it work?" comes first: the answer makes everything else smarter.
+  for (const x of (list || []).filter((x) => x.ask_verdict)) {
+    out.push(card("ask",
+      h("h2", {}, `Did "${x.title}" help?`),
+      h("p", { class: "muted" }, `You've played ${s.name} since you applied it.`),
+      h("div", { class: "actions" },
+        h("button", { class: "primary", onclick: () => setVerdict(s.app_id, x.id, true) }, "Yes, it works now"),
+        h("button", { class: "secondary", onclick: () => setVerdict(s.app_id, x.id, false) }, "No, still broken"))));
+  }
+
   let left;
   if (list === undefined) {
     left = card("", h("div", { class: "skeleton" }), h("div", { class: "skeleton short" }), h("div", { class: "skeleton" }));
   } else if (list.length) {
     const top = list[0];
     left = card("recommended",
-      h("span", { class: "eyebrow" }, top.status === "new" ? "Recommended fix" : FIX_STATUS[top.status][0]),
+      h("span", { class: "eyebrow" }, top.status === "new" ? "Most likely" : FIX_STATUS[top.status][0]),
       ...suggestionBody(s.app_id, top),
       list.length > 1 ? h("button", { class: "link", onclick: () => switchTab("fixes") }, `See all ${list.length} suggestions`) : null);
   } else {
@@ -352,7 +387,7 @@ function overviewTab(d) {
   }
 
   const path = card("",
-    h("h2", { class: "card-title" }, "Launch path"),
+    h("h2", { class: "card-title" }, "How the game starts"),
     h("div", { class: "path" }, d.pipeline.map((n) =>
       h("div", { class: `node ${n.state}` }, h("span", { class: "ring" }), h("strong", {}, n.label), h("span", {}, n.detail)))));
 
@@ -361,19 +396,39 @@ function overviewTab(d) {
         h("h2", { class: "card-title" }, "Recent crashes"),
         h("ul", { class: "rows" }, d.crashes.slice(0, 5).map((c) => h("li", {}, h("span", { class: "when" }, c.when), h("span", {}, c.what)))))
     : card("grow",
-        h("h2", { class: "card-title" }, "Recent launches"),
+        h("h2", { class: "card-title" }, "Recent starts"),
         d.launches.length
           ? h("ul", { class: "rows" }, d.launches.slice(0, 4).map(launchRow))
-          : h("p", { class: "muted" }, s.enabled ? "Start the game from Steam and it shows up here." : "Launches show up here once CachyPlay is on."));
+          : h("p", { class: "muted" }, s.enabled ? "Start the game from Steam and it shows up here." : "Starts show up here once CachyPlay is on."));
 
-  return [h("div", { class: "overview" }, left, h("div", { class: "stack" }, path, activity))];
+  out.push(h("div", { class: "overview" }, left, h("div", { class: "stack" }, path, activity)));
+  if (ins && ins.working && ins.working.length && ins.summary && ins.summary.light === "red") out.push(compareCard(ins));
+  return out;
+}
+
+/* This game next to games that run fine on the same PC. */
+function compareCard(ins) {
+  const tool = (t) => (t ? t.replace(/-x86_64$/, "") : "Native Linux");
+  const opts = (o) => (o && o.trim() ? o.trim() : "None");
+  const rows = [ins.this_setup, ...ins.working.slice(0, 3)];
+  return card("compare",
+    h("h2", { class: "card-title" }, "Compared with games that run fine"),
+    h("p", { class: "muted" }, "Same PC, same driver. Differences are worth trying one at a time."),
+    h("table", { class: "compare" },
+      h("thead", {}, h("tr", {}, h("th", {}, ""), ...rows.map((r, i) => h("th", { class: i === 0 ? "this" : "" }, r.name)))),
+      h("tbody", {},
+        h("tr", {}, h("th", {}, "Status"), ...rows.map((r, i) => h("td", { class: i === 0 ? "this bad" : "good" }, i === 0 ? "Not working" : `Ran ${duration(r.minutes * 60)}`))),
+        h("tr", {}, h("th", {}, "Proton"), ...rows.map((r, i) => h("td", { class: i === 0 ? "this" : "" }, tool(r.tool)))),
+        ins.this_graphics ? h("tr", {}, h("th", {}, "Graphics"), h("td", { class: "this" }, ins.this_graphics), ...rows.slice(1).map(() => h("td", { class: "muted" }, "—"))) : null,
+        h("tr", {}, h("th", {}, "Launch options"), ...rows.map((r, i) => h("td", { class: i === 0 ? "this" : "" }, h("code", {}, opts(r.launch_options))))))));
 }
 
 function launchRow(l) {
   return h("li", {},
     h("span", { class: "when" }, when(l.started_at)),
-    h("span", {}, duration(l.runtime_secs)),
-    l.failed ? h("span", { class: "bad" }, "Closed early") : h("span", { class: "good" }, "Ran normally"));
+    h("span", {}, l.running ? "" : duration(l.runtime_secs)),
+    l.running ? h("span", { class: "warn" }, "Running now, or stopped responding")
+      : l.failed ? h("span", { class: "bad" }, "Closed early") : h("span", { class: "good" }, "Ran normally"));
 }
 
 /* ---------- suggested fixes ---------- */
@@ -384,19 +439,34 @@ const FIX_STATUS = {
   didnt_help: ["Didn't help", "The game crashed again after this. Try the next suggestion, or undo it."],
 };
 
+const CONFIDENCE = { likely: "Likely", possible: "Possible", unsure: "Not sure yet" };
+
 function suggestionBody(appId, s) {
+  const ins = insightsFor(appId);
   const out = [
-    h("h2", {}, s.title),
+    h("div", { class: "s-title" }, h("h2", {}, s.title), h("span", { class: `confidence ${s.confidence}`, title: "How sure CachyPlay is" }, CONFIDENCE[s.confidence])),
     h("ul", { class: "why" }, s.why.map((w) => h("li", {}, w))),
   ];
-  if (s.status !== "new") out.push(h("p", { class: `s-note ${s.status}` }, FIX_STATUS[s.status][1]));
+  // Only fixes CachyPlay applied have a "worked / didn't help" story to tell.
+  if (s.status !== "new" && (s.fix || s.switched)) out.push(h("p", { class: `s-note ${s.status}` }, FIX_STATUS[s.status][1]));
   if (s.steps.length) out.push(h("ol", { class: "steps" }, s.steps.map((st) => h("li", {}, st))));
+  if (s.switch_tool) {
+    const blocked = editBlocked();
+    out.push(h("div", { class: "actions" },
+      s.switched
+        ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => compatAction("undo_compat_tool", { appId }) }, "Undo")
+        : h("button", { class: "primary", disabled: !!blocked, title: blocked || "", onclick: () => compatAction("switch_compat_tool", { appId, name: s.switch_tool.name }) }, `Switch to ${s.switch_tool.display}`),
+      blocked ? h("span", { class: "muted" }, "Close Steam first.") : null));
+  }
   if (s.fix) {
     const tech = [...Object.entries(s.fix.env).map(([k, v]) => `${k}=${v}`), ...s.fix.args].join(" ");
-    out.push(h("code", { class: "tech" }, tech));
+    out.push(h("details", { class: "tech-details" }, h("summary", {}, "Show the technical setting"), h("code", { class: "tech" }, tech)));
     out.push(h("div", { class: "actions" }, s.status !== "new"
       ? h("button", { class: "secondary", onclick: () => undoFix(appId, s.id) }, "Undo")
-      : h("button", { class: "primary", onclick: (e) => applyFix(appId, s.id, e.currentTarget) }, "Apply fix")));
+      : h("button", { class: "primary", onclick: (e) => applyFix(appId, s.id, e.currentTarget) }, "Apply fix"),
+      s.status === "worked" && ins && ins.share_urls[s.id]
+        ? h("button", { class: "secondary", title: "Opens a GitHub page you can read before sending. It helps make this a tested fix for everyone.", onclick: () => openUrl(ins.share_urls[s.id]) }, "Share that this worked")
+        : null));
   }
   return out;
 }
@@ -409,7 +479,7 @@ function fixesTab(d) {
       h("p", { class: "muted" }, "CachyPlay found no crashes or problems for this game."))];
   }
   return [
-    h("p", { class: "muted intro" }, "Worked out on your PC from crashes, logs and your system, most likely first. Every fix can be undone."),
+    h("p", { class: "muted intro" }, "Worked out on your PC from crashes, logs and how your other games run, most likely first. Every fix can be undone."),
     h("ol", { class: "fix-list" }, list.map((s, i) => h("li", {},
       card(i === 0 && s.status === "new" ? "recommended" : "",
         h("div", { class: "fix-head" },
@@ -458,8 +528,23 @@ function settingsTab(d) {
       h("ul", { class: "tweaks" }, userBits.map((t) => h("li", {}, t))),
       d.edited_since ? h("p", { class: "note" }, "You edited this game's launch options in Steam after CachyPlay did. Turning CachyPlay off keeps your edits.") : null));
   }
+  out.push(prefixCard(d));
   out.push(h("details", { class: "raw" }, h("summary", {}, "Show Steam's launch options for this game"), h("code", {}, d.launch_options || "(empty)")));
   return out;
+}
+
+/* Reset the game's Windows files (Proton prefix), with Undo. */
+function prefixCard(d) {
+  const ins = insightsFor(d.summary.app_id);
+  if (!ins || (!ins.has_prefix && !ins.kept_prefixes)) return null;
+  const blocked = editBlocked();
+  return card("prefix",
+    h("h2", { class: "card-title" }, "Reset the game's Windows files"),
+    h("p", { class: "muted" }, "Proton keeps a small Windows setup for each game. If it gets damaged, the game can crash at start no matter what else you change. Resetting sets it aside (nothing is deleted) and Steam builds a fresh one next time. Saves kept there come back with Undo; most games also keep saves in Steam Cloud."),
+    h("div", { class: "actions" },
+      ins.has_prefix ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("reset_prefix", d.summary.app_id, d.summary.name) }, "Reset Windows files") : null,
+      ins.kept_prefixes ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("undo_prefix_reset", d.summary.app_id, d.summary.name) }, "Undo reset") : null,
+      blocked ? h("span", { class: "muted" }, "Close Steam first.") : null));
 }
 
 function obsCard(d) {
@@ -500,18 +585,30 @@ function obsCard(d) {
 }
 
 function historyTab(d) {
-  return [
+  const ins = insightsFor(d.summary.app_id);
+  const out = [
     card("",
       h("h2", { class: "card-title" }, "Graphics driver crashes"),
       d.crashes.length
         ? h("ul", { class: "rows" }, d.crashes.map((c) => h("li", {}, h("span", { class: "when" }, c.when), h("span", {}, c.what))))
         : h("p", { class: "muted" }, "None recorded since the last restart.")),
     card("",
-      h("h2", { class: "card-title" }, "Launches through CachyPlay"),
+      h("h2", { class: "card-title" }, "Starts through CachyPlay"),
       d.launches.length
         ? h("ul", { class: "rows" }, d.launches.map(launchRow))
-        : h("p", { class: "muted" }, d.summary.enabled ? "Start the game from Steam and it shows up here." : "Launches are recorded once CachyPlay is on.")),
+        : h("p", { class: "muted" }, d.summary.enabled ? "Start the game from Steam and it shows up here." : "Starts are recorded once CachyPlay is on.")),
   ];
+  if (ins && ins.developer_report) {
+    out.push(card("dev",
+      h("h2", { class: "card-title" }, "Tell the developer"),
+      h("p", { class: "muted" }, "Developers fix what they can see. Copy this, post it in the game's Steam discussions (or the developer's Discord), and attach a bug report."),
+      h("pre", { class: "dev-text" }, ins.developer_report),
+      h("div", { class: "actions" },
+        h("button", { class: "primary", onclick: () => copyText(ins.developer_report, "Copied. Paste it into your post.") }, "Copy text"),
+        h("button", { class: "secondary", onclick: () => openUrl(ins.discussions_url) }, "Open Steam discussions"),
+        h("button", { class: "secondary", onclick: () => saveReport(d.summary.app_id) }, "Save bug report"))));
+  }
+  return out;
 }
 
 function when(iso) {
@@ -537,7 +634,17 @@ async function applyFix(appId, id, btn) {
   } catch (e) {
     toast(String(e), "error");
   }
-  state.suggestions.delete(appId);
+  state.insights.delete(appId);
+  await load();
+}
+
+async function compatAction(cmd, args) {
+  try {
+    toast(await invoke(cmd, args), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(args.appId);
   await load();
 }
 
@@ -547,8 +654,56 @@ async function undoFix(appId, id) {
   } catch (e) {
     toast(String(e), "error");
   }
-  state.suggestions.delete(appId);
+  state.insights.delete(appId);
   await load();
+}
+
+async function fixIt(appId, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Fixing…";
+  }
+  try {
+    toast(await invoke("fix_it", { appId }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
+async function setVerdict(appId, id, worked) {
+  try {
+    toast(await invoke("set_verdict", { appId, id, worked }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
+async function prefixAction(cmd, appId, name) {
+  if (cmd === "reset_prefix") {
+    const ok = await confirmDialog(`Reset ${name}'s Windows files?`,
+      "They're set aside, not deleted, and Undo puts them back. The game's first start afterwards takes a little longer while Steam sets things up again.",
+      "Reset");
+    if (!ok) return;
+  }
+  try {
+    toast(await invoke(cmd, { appId }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
+async function openUrl(url) {
+  try {
+    await invoke("open_url", { url });
+  } catch (e) {
+    toast(String(e), "error");
+  }
 }
 
 async function setEnabled(appId, on) {
@@ -612,7 +767,7 @@ async function checkUpdates(silent) {
     line.textContent = "Checking for updates…";
   }
   try {
-    state.update = await invoke("update_status");
+    state.update = await invoke("update_status", { force: !silent });
   } catch (e) {
     state.update = { error: String(e) };
   }
@@ -803,7 +958,163 @@ function openSettings() {
   if (!state.update) checkUpdates(false);
   renderKept();
   renderObsSettings();
-  $("settings").showModal();
+  renderAppSettings();
+  if (!$("pc-checks").children.length) runPcCheck();
+  $("games-view").hidden = true;
+  $("settings").hidden = false;
+  $("settings-content").scrollTop = 0;
+  $("close-settings").focus();
+}
+
+function closeSettings() {
+  $("settings").hidden = true;
+  $("games-view").hidden = false;
+}
+
+/* ---------- PC check and self-test ---------- */
+const LEVEL_TEXT = { ok: "OK", warn: "Worth fixing", bad: "Problem", info: "Good to know" };
+
+function checkItem(c) {
+  return h("li", { class: `check-item ${c.level}` },
+    h("span", { class: "check-level" }, LEVEL_TEXT[c.level]),
+    h("div", {},
+      h("strong", {}, c.title),
+      c.level === "ok" ? h("span", { class: "muted" }, ` ${c.detail}`) : h("p", {}, c.detail),
+      c.command ? h("div", { class: "command-row" }, h("code", {}, c.command),
+        h("button", { type: "button", class: "secondary", onclick: () => copyText(c.command, "Copied. Paste it into a terminal.") }, "Copy")) : null));
+}
+
+function sortChecks(list) {
+  const order = { bad: 0, warn: 1, info: 2, ok: 3 };
+  return [...list].sort((a, b) => order[a.level] - order[b.level]);
+}
+
+async function runPcCheck() {
+  try {
+    state.pcCheck = await invoke("pc_check");
+  } catch (e) {
+    state.pcCheck = [];
+    toast(String(e), "error");
+  }
+  $("pc-checks").replaceChildren(...sortChecks(state.pcCheck).map(checkItem));
+  if (!$("settings").hidden) return;
+  if (state.selected) renderMain(); else renderEmptyMain();
+}
+
+async function runSelfTest() {
+  try {
+    const list = await invoke("self_test");
+    $("self-test").replaceChildren(...sortChecks(list).map(checkItem));
+  } catch (e) {
+    toast(String(e), "error");
+  }
+}
+
+/* ---------- display and privacy ---------- */
+async function loadAppSettings() {
+  try {
+    state.settings = await invoke("app_settings");
+  } catch {
+    state.settings = {};
+  }
+  applyDisplay();
+}
+
+function renderAppSettings() {
+  const st = state.settings;
+  for (const r of document.querySelectorAll('input[name="theme"]')) r.checked = r.value === (st.theme || "system");
+  $("big-screen").checked = !!st.big_screen;
+  $("protondb").checked = !!st.protondb;
+}
+
+async function setAppSetting(key, value) {
+  try {
+    await invoke("set_app_setting", { key, value });
+    state.settings[key] = value;
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  applyDisplay();
+  if (key === "protondb" && value && state.selected) showGame(state.selected, { keepScroll: true });
+}
+
+/* Theme (follow the desktop, or forced) and KDE's accent color. */
+async function applyDisplay() {
+  const st = state.settings;
+  const theme = st.theme || "system";
+  const dark = theme === "dark" || (theme === "system" && !window.matchMedia("(prefers-color-scheme: light)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.body.classList.toggle("big-screen", !!st.big_screen);
+  let accent = null;
+  if (theme === "system") {
+    try {
+      accent = await invoke("desktop_accent");
+    } catch {
+      accent = null;
+    }
+  }
+  if (accent) document.documentElement.style.setProperty("--accent", accent);
+  else document.documentElement.style.removeProperty("--accent");
+  if (st.big_screen) startGamepad();
+}
+
+/* Big-screen mode: a controller moves around like the arrow keys. A = press, B = back. */
+let gamepadTimer = null;
+const padState = {};
+function startGamepad() {
+  if (gamepadTimer || !navigator.getGamepads) return;
+  gamepadTimer = setInterval(() => {
+    if (!state.settings.big_screen) return;
+    for (const pad of navigator.getGamepads()) {
+      if (!pad) continue;
+      const pressed = (i) => pad.buttons[i] && pad.buttons[i].pressed;
+      const axisY = pad.axes[1] || 0;
+      const axisX = pad.axes[0] || 0;
+      const inputs = {
+        up: pressed(12) || axisY < -0.6,
+        down: pressed(13) || axisY > 0.6,
+        left: pressed(14) || axisX < -0.6,
+        right: pressed(15) || axisX > 0.6,
+        a: pressed(0),
+        b: pressed(1),
+      };
+      for (const [k, on] of Object.entries(inputs)) {
+        const was = padState[k];
+        padState[k] = on;
+        if (!on || was) continue;
+        padPress(k);
+      }
+    }
+  }, 80);
+}
+
+function focusables() {
+  const root = $("settings").hidden ? $("games-view") : $("settings");
+  return [...root.querySelectorAll("button:not([disabled]), a[href], input:not([disabled]), summary")].filter((el) => el.offsetParent !== null);
+}
+
+function padPress(k) {
+  const el = document.activeElement;
+  if (k === "a") { if (el && el !== document.body) el.click(); return; }
+  if (k === "b") {
+    if (!$("settings").hidden) closeSettings();
+    else for (const d of document.querySelectorAll("dialog[open]")) d.close();
+    return;
+  }
+  const list = focusables();
+  if (!list.length) return;
+  const i = list.indexOf(el);
+  // Left/right jump between the game list and the game page; up/down move within.
+  if ((k === "left" || k === "right") && $("settings").hidden) {
+    const inRail = el && el.closest && el.closest("#rail");
+    const target = k === "right" && inRail ? $("main").querySelector("button:not([disabled])")
+      : k === "left" && !inRail ? $("rail").querySelector('.rail-item[aria-current="true"]') || $("rail").querySelector(".rail-item")
+      : null;
+    if (target) { target.focus(); target.scrollIntoView({ block: "nearest" }); }
+    return;
+  }
+  const next = list[Math.max(0, Math.min(list.length - 1, i + (k === "down" || k === "right" ? 1 : -1)))];
+  if (next) { next.focus(); next.scrollIntoView({ block: "nearest" }); }
 }
 
 async function renderObsSettings() {
@@ -915,7 +1226,7 @@ async function uninstall() {
   if (!ok) return;
   try {
     const msg = await invoke("uninstall", { removeBackups: !keep, keepSettings });
-    $("settings").close();
+    closeSettings();
     toast(msg, "success");
   } catch (e) {
     toast(String(e), "error");
@@ -953,12 +1264,32 @@ for (const r of document.querySelectorAll('input[name="channel"]')) {
 $("restore-all").addEventListener("click", restoreAll);
 $("uninstall").addEventListener("click", uninstall);
 $("rail").addEventListener("keydown", railKeys);
+$("close-settings").addEventListener("click", closeSettings);
+$("run-pc-check").addEventListener("click", runPcCheck);
+$("run-self-test").addEventListener("click", runSelfTest);
+for (const r of document.querySelectorAll('input[name="theme"]')) {
+  r.addEventListener("change", () => r.checked && setAppSetting("theme", r.value));
+}
+$("big-screen").addEventListener("change", (e) => setAppSetting("big_screen", e.target.checked));
+$("protondb").addEventListener("change", (e) => setAppSetting("protondb", e.target.checked));
+for (const a of document.querySelectorAll(".settings-nav a")) {
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    document.querySelector(a.getAttribute("href")).scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("settings").hidden && !document.querySelector("dialog[open]")) closeSettings();
+});
+window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyDisplay);
 $("search").addEventListener("input", (e) => { state.query = e.target.value.trim().toLowerCase(); renderRail(); });
 
 // Steam may have been opened or closed while CachyPlay was in the background.
 // Suggestions are recomputed too, since a game may have crashed meanwhile.
-window.addEventListener("focus", () => { state.suggestions.clear(); load(); });
+window.addEventListener("focus", () => { state.insights.clear(); load(); });
 
-load();
-// Check for a newer CachyPlay once at startup, in the background; never blocks anything.
+loadAppSettings().then(load);
+// Check for a newer CachyPlay once at startup (at most once a day online), in the background.
 checkUpdates(true);
+// Quietly check the PC; problems show as a banner.
+runPcCheck();

@@ -126,7 +126,7 @@ impl Ctx {
         self.steam.localconfig_path(&self.account.account_id)
     }
 
-    fn require_editable(&self) -> Result<()> {
+    pub(crate) fn require_editable(&self) -> Result<()> {
         if self.steam.kind == steam::InstallKind::Flatpak {
             bail!("Flatpak Steam isn't supported yet in CachyPlay 0.1.0. Nothing was changed.");
         }
@@ -152,7 +152,28 @@ impl Ctx {
         Ok(doc.get_str(&lo_path(app_id)).map(str::to_string))
     }
 
+    /// If Steam's settings file isn't laid out the way CachyPlay knows (Valve changed the
+    /// format, or the file is damaged), say why. CachyPlay then changes nothing and keeps only its
+    /// read-only features (crash detection, bug reports) until an update supports the new format.
+    pub fn format_problem(&self) -> Option<String> {
+        let p = self.localconfig();
+        let text = match fs::read_to_string(&p) {
+            Ok(t) => t,
+            // A missing file is handled where it's needed (first start of the account).
+            Err(_) => return None,
+        };
+        let unknown = "Steam's settings file looks different from what this version of CachyPlay knows, so it won't change anything until an update supports it. Crash detection and bug reports still work.";
+        match Doc::parse(&text) {
+            Err(_) => Some(unknown.into()),
+            Ok(doc) if doc.lookup(&APPS_PATH[..1]).is_none() => Some(unknown.into()),
+            Ok(_) => None,
+        }
+    }
+
     fn write_launch_options(&self, app_id: &str, value: &str) -> Result<()> {
+        if let Some(why) = self.format_problem() {
+            bail!("{why}");
+        }
         let doc = self.read_doc()?;
         let new_text = doc.with_str(&lo_path(app_id), value)?;
         backup(
@@ -160,11 +181,13 @@ impl Ctx {
             &self.paths.backups(&self.account.account_id),
             5,
         )?;
-        atomic_write(&self.localconfig(), new_text.as_bytes())?;
+        let allowed = vec![lo_path(app_id).join("/").to_ascii_lowercase()];
+        crate::fsutil::verified_vdf_write(&self.localconfig(), &doc.text, &new_text, &allowed)?;
         // Read back to confirm what Steam will see.
         let check = self.launch_options(app_id)?;
         if check.as_deref() != Some(value) {
-            bail!("verification failed after writing launch options for {app_id}");
+            let _ = atomic_write(&self.localconfig(), doc.text.as_bytes());
+            bail!("verification failed after writing launch options for {app_id}; the original was restored");
         }
         Ok(())
     }

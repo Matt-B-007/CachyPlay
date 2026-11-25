@@ -41,6 +41,18 @@ jobs:
           cp target/release/cachyplay target/release/cachyplay-gui install.sh README.md LICENSE CHANGELOG.md "dist/$name/"
           cp assets/cachyplay.svg "dist/$name/"
           (cd dist && tar --zstd -cf "$name.tar.zst" "$name" && sha256sum "$name.tar.zst" > SHA256SUMS.txt)
+      - name: Sign the checksums (if a signing key is set up; see RELEASING.md)
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if [ -n "$MINISIGN_KEY" ]; then
+            sudo apt-get install -y minisign
+            printf '%s\n' "$MINISIGN_KEY" > /tmp/minisign.key
+            minisign -S -s /tmp/minisign.key -m dist/SHA256SUMS.txt -t "CachyPlay ${GITHUB_REF_NAME}"
+            rm -f /tmp/minisign.key
+          else
+            echo "No MINISIGN_KEY secret: release is checksummed but not signed."
+          fi
 
       - name: Release notes from CHANGELOG
         run: |
@@ -54,3 +66,4 @@ jobs:
           files: |
             dist/*.tar.zst
             dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt.minisig

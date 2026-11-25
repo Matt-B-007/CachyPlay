@@ -1,6 +1,7 @@
 //! What the GUI (and CLI) show: game summaries with one status badge each, and a detail view
 //! with the before/after changes table. Plain data, ready to serialize.
 
+use crate::crashmatch::CrashEvent;
 use crate::manage::Ctx;
 use crate::paths::{self, Paths};
 use crate::recipes::{self, Facts, Recipe};
@@ -52,6 +53,9 @@ pub struct GameSummary {
     pub gpu_crashes: usize,
     pub anti_cheat: Option<String>,
     pub badge: Badge,
+    /// Traffic light for the game list: green runs fine, yellow works with a fix, red broken,
+    /// grey not played lately.
+    pub light: crate::advice::Light,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +146,8 @@ pub fn steam_info(ctx: &Ctx) -> SteamInfo {
     let running = steam::is_running_in(&ctx.proc_root);
     let blocked_reason = if ctx.steam.kind == InstallKind::Flatpak {
         Some("Flatpak Steam isn't supported yet. CachyPlay won't change anything.".into())
+    } else if let Some(why) = ctx.format_problem() {
+        Some(why)
     } else if running {
         Some(
             "Close Steam to turn games on or off. Steam rewrites its settings when it exits."
@@ -282,7 +288,56 @@ pub fn summary_with(ctx: &Ctx, game: &Game, gpu_crashes: usize) -> GameSummary {
         last_failed,
         gpu_crashes,
         anti_cheat: recipe.and_then(|r| r.anti_cheat),
+        light: if matches!(badge, Badge::LastFailed | Badge::Crashed) {
+            crate::advice::Light::Red
+        } else {
+            crate::advice::Light::Grey
+        },
         badge,
+    }
+}
+
+/// Refine each game's light with Steam's session log (read once for the whole list).
+fn set_lights(ctx: &Ctx, games: &mut [GameSummary], events: &[CrashEvent]) {
+    use crate::advice::Light;
+    use crate::history::{self, Outcome};
+    let sessions = crate::crashmatch::parse_steam_sessions(&ctx.steam.console_logs());
+    let crash_refs: Vec<&CrashEvent> = events.iter().collect();
+    for g in games.iter_mut() {
+        let fixes = crate::fixes::load(&ctx.paths, &g.app_id).fixes;
+        // A fix applied after the last crash, and not judged useless: it's being tried.
+        let newest_fix = fixes
+            .iter()
+            .filter(|f| f.verdict != Some(false) && !f.temporary)
+            .filter_map(|f| chrono::DateTime::parse_from_rfc3339(&f.applied_at).ok())
+            .map(|t| t.with_timezone(&chrono::Local).naive_local())
+            .max();
+        let last_crash = events
+            .iter()
+            .filter(|e| e.app_id.as_deref() == Some(g.app_id.as_str()))
+            .map(|e| e.at)
+            .max();
+        if g.enabled && newest_fix.is_some_and(|f| last_crash.is_none_or(|c| f > c)) {
+            g.light = Light::Yellow;
+            continue;
+        }
+        if g.light == Light::Red {
+            continue;
+        }
+        let runs = history::runs(&sessions, &g.app_id, &crash_refs);
+        let has_fixes = !fixes.is_empty();
+        g.light = if history::trouble(&runs).is_some() {
+            Light::Red
+        } else if has_fixes && g.enabled {
+            Light::Yellow
+        } else if runs
+            .last()
+            .is_some_and(|r| matches!(r.outcome, Outcome::Played | Outcome::Ok))
+        {
+            Light::Green
+        } else {
+            Light::Grey
+        };
     }
 }
 
@@ -298,11 +353,14 @@ pub fn overview(paths: &Paths, ctx: Result<&Ctx, String>) -> Overview {
                 steam_error: None,
                 games: {
                     let crashes = counts(&events);
-                    ctx.steam
+                    let mut games: Vec<GameSummary> = ctx
+                        .steam
                         .games()
                         .iter()
                         .map(|g| summary_with(ctx, g, crashes.get(&g.app_id).copied().unwrap_or(0)))
-                        .collect()
+                        .collect();
+                    set_lights(ctx, &mut games, &events);
+                    games
                 },
                 system_crashes: system_crashes(ctx, &events),
             }

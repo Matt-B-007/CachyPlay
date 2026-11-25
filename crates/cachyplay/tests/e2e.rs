@@ -567,3 +567,142 @@ fn obs_capture_starts_the_game_through_obs_gamecapture() {
     steam_launch(&f, &lo, &game, &[("PATH", &path)]);
     assert!(!mark.exists());
 }
+
+#[test]
+fn switches_a_games_proton_version_and_back() {
+    let f = FakeSteam::new();
+    let d = f
+        .steam_root()
+        .join("compatibilitytools.d/GE-Proton11-12-x86_64");
+    fs::create_dir_all(&d).unwrap();
+    fs::write(
+        d.join("compatibilitytool.vdf"),
+        "\"compatibilitytools\"\n{\n\t\"compat_tools\"\n\t{\n\t\t\"GE-Proton11-12\"\n\t\t{\n\t\t\t\"display_name\" \"GE-Proton11-12\"\n\t\t}\n\t}\n}\n",
+    )
+    .unwrap();
+    let list = ok(cmd(&f, &["proton", "1240440"]).output().unwrap());
+    assert!(
+        list.contains("Steam's default") && list.contains("GE-Proton11-12"),
+        "{list}"
+    );
+    let o = ok(cmd(&f, &["proton", "1240440", "GE-Proton11-12"])
+        .output()
+        .unwrap());
+    assert!(o.contains("now uses GE-Proton11-12"), "{o}");
+    let cfg = fs::read_to_string(f.steam_root().join("config/config.vdf")).unwrap();
+    assert!(
+        cfg.contains("\"CompatToolMapping\"") && cfg.contains("\"GE-Proton11-12\""),
+        "{cfg}"
+    );
+
+    // Steam open: refused, nothing changed.
+    f.start_steam();
+    let o = cmd(&f, &["proton", "1240440", "undo"]).output().unwrap();
+    assert!(!o.status.success());
+    fs::remove_dir_all(f.home().join("proc/4242")).unwrap();
+
+    let o = ok(cmd(&f, &["proton", "1240440", "undo"]).output().unwrap());
+    assert!(o.contains("back on Steam's default"), "{o}");
+}
+
+#[test]
+fn launch_helper_is_fast_and_always_lets_the_game_start() {
+    let f = FakeSteam::new();
+    ok(cmd(&f, &["apply", "1240440"])
+        .env("CACHYPLAY_DEV", "1")
+        .output()
+        .unwrap());
+    let lo = launch_options(&f);
+    let game = fake_game(f.home());
+
+    // Overhead: starting through CachyPlay adds well under a quarter second (debug build).
+    let t = std::time::Instant::now();
+    for _ in 0..5 {
+        assert_eq!(steam_launch(&f, &lo, &game, &[]).0, 0);
+    }
+    let per_launch = t.elapsed() / 5;
+    assert!(
+        per_launch < std::time::Duration::from_millis(250),
+        "{per_launch:?} per launch"
+    );
+
+    // A record is written when the game starts, and finished when it closes.
+    let launches = f.home().join(".local/state/cachyplay/launches");
+    let newest = fs::read_dir(&launches)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .max()
+        .unwrap();
+    let rec = fs::read_to_string(&newest).unwrap();
+    assert!(rec.contains("\"running\": false"), "{rec}");
+
+    // Broken CachyPlay files never stop the game.
+    let fixes = f.home().join(".local/share/cachyplay/fixes");
+    fs::create_dir_all(&fixes).unwrap();
+    fs::write(fixes.join("1240440.json"), "{ not json").unwrap();
+    let (code, out) = steam_launch(&f, &lo, &game, &[]);
+    assert_eq!(code, 0);
+    assert!(out.contains("args:"), "{out}");
+
+    // Unwritable state folder: the game still starts.
+    let state = f.home().join(".local/state/cachyplay");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
+    let (code, out) = steam_launch(&f, &lo, &game, &[]);
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(code, 0);
+    assert!(out.contains("args:"), "{out}");
+
+    // CachyPlay deleted: Steam's launch line falls back to starting the game directly.
+    let bin = lo
+        .split('\'')
+        .nth(2)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let lo_missing = lo.replace(&bin, "/nonexistent/cachyplay");
+    let (code, out) = steam_launch(&f, &lo_missing, &game, &[]);
+    assert_eq!(code, 0);
+    assert!(out.contains("args:"), "{out}");
+}
+
+#[test]
+fn resets_a_games_windows_files_and_puts_them_back() {
+    let f = FakeSteam::new();
+    let prefix = f
+        .home()
+        .join(".local/share/Steam/steamapps/compatdata/1240440");
+    fs::create_dir_all(prefix.join("pfx/drive_c/users/steamuser/Saved Games")).unwrap();
+    fs::write(
+        prefix.join("pfx/drive_c/users/steamuser/Saved Games/save.dat"),
+        "progress",
+    )
+    .unwrap();
+    let o = ok(cmd(&f, &["reset-prefix", "1240440"]).output().unwrap());
+    assert!(o.contains("Set Halo Infinite's Windows files aside"), "{o}");
+    assert!(!prefix.exists(), "Steam will make a fresh one");
+    // Steam makes a fresh prefix on the next start.
+    fs::create_dir_all(prefix.join("pfx")).unwrap();
+    ok(cmd(&f, &["reset-prefix", "1240440", "--undo"])
+        .output()
+        .unwrap());
+    assert_eq!(
+        fs::read_to_string(prefix.join("pfx/drive_c/users/steamuser/Saved Games/save.dat"))
+            .unwrap(),
+        "progress",
+        "the old files, saves included, are back"
+    );
+    // Nothing was deleted: the fresh one was kept too.
+    let kept: Vec<String> = fs::read_dir(prefix.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        kept.iter()
+            .any(|n| n.starts_with("1240440.cachyplay-fresh-")),
+        "{kept:?}"
+    );
+}

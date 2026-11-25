@@ -29,7 +29,7 @@
     </div>
   </header>
 
-  <div class="body">
+  <div class="body" id="games-view">
     <nav class="rail" id="rail" aria-label="Your games"></nav>
     <main class="main" id="main" aria-live="polite">
       <div class="main-empty"><img src="logo.svg" alt="" width="72" height="72" /><p>Your games appear here once Steam is found.</p></div>
@@ -38,13 +38,26 @@
 
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-  <dialog id="settings">
-    <form method="dialog" class="dialog-body">
-      <h2>Settings</h2>
-      <dl class="facts" id="settings-facts"></dl>
+  <section class="settings-page" id="settings" hidden aria-label="Settings">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <button class="back" id="close-settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        Back to games
+      </button>
+      <a href="#set-updates">Updates</a>
+      <a href="#set-pc">PC check</a>
+      <a href="#set-display">Display</a>
+      <a href="#set-privacy">Privacy</a>
+      <a href="#set-obs">OBS game capture</a>
+      <a href="#set-kept">Your game settings</a>
+      <a href="#set-about">About &amp; self-test</a>
+      <a href="#set-uninstall">Restore &amp; uninstall</a>
+    </nav>
+    <div class="settings-content" id="settings-content">
+      <h1>Settings</h1>
 
-      <section class="setting-block">
-        <h3>Updates</h3>
+      <section class="setting-block" id="set-updates">
+        <h2>Updates</h2>
         <div class="channels" role="radiogroup" aria-label="Update channel">
           <label class="channel">
             <input type="radio" name="channel" value="stable" />
@@ -63,39 +76,65 @@
         </div>
       </section>
 
-      <section class="setting-block">
-        <h3>OBS game capture</h3>
+      <section class="setting-block" id="set-pc">
+        <h2>PC check</h2>
+        <p>The things that most often stop games on Linux. Nothing is changed; where something needs fixing, there's a command to copy.</p>
+        <ul class="checks" id="pc-checks"></ul>
+        <button type="button" class="secondary" id="run-pc-check">Check again</button>
+      </section>
+
+      <section class="setting-block" id="set-display">
+        <h2>Display</h2>
+        <div class="channels three" role="radiogroup" aria-label="Theme">
+          <label class="channel"><input type="radio" name="theme" value="system" /><span><strong>Match desktop</strong><span>Light or dark, and your KDE accent color.</span></span></label>
+          <label class="channel"><input type="radio" name="theme" value="dark" /><span><strong>Dark</strong><span>Easy on the eyes at night.</span></span></label>
+          <label class="channel"><input type="radio" name="theme" value="light" /><span><strong>Light</strong><span>For bright rooms.</span></span></label>
+        </div>
+        <label class="check"><input type="checkbox" id="big-screen" /> Big-screen mode: larger text, and a controller or arrow keys move around (for the TV or Steam Big Picture)</label>
+      </section>
+
+      <section class="setting-block" id="set-privacy">
+        <h2>Privacy</h2>
+        <p>CachyPlay works offline. The only things it ever sends: checking GitHub for updates (no personal details), and, if you turn it on below, asking ProtonDB how well a game runs for other players (only the game's number is sent).</p>
+        <label class="check"><input type="checkbox" id="protondb" /> Show each game's ProtonDB rating</label>
+      </section>
+
+      <section class="setting-block" id="set-obs">
+        <h2>OBS game capture</h2>
         <p>Starts games through <code>obs-gamecapture</code>, so OBS's Game Capture source records just the game instead of your whole screen. You can also turn it on for one game in that game's Settings tab.</p>
         <label class="check"><input type="checkbox" id="obs-all" /> Use it for every game CachyPlay is on for</label>
         <p id="obs-status" class="status-line"></p>
       </section>
 
-      <section class="setting-block">
-        <h3>Your game settings</h3>
+      <section class="setting-block" id="set-kept">
+        <h2>Your game settings</h2>
         <p>What CachyPlay applies to each game, written as Steam launch options. Paste a line into the game's Properties → Launch options in Steam to keep it without CachyPlay.</p>
         <ul class="kept-list" id="kept-list"></ul>
         <button type="button" class="secondary" id="export-settings">Save a copy to Desktop</button>
       </section>
 
-      <section class="setting-block">
-        <h3>Restore all games</h3>
+      <section class="setting-block" id="set-about">
+        <h2>About &amp; self-test</h2>
+        <dl class="facts" id="settings-facts"></dl>
+        <ul class="checks" id="self-test"></ul>
+        <button type="button" class="secondary" id="run-self-test">Test CachyPlay's setup</button>
+      </section>
+
+      <section class="setting-block" id="set-uninstall">
+        <h2>Restore all games</h2>
         <p>Turns CachyPlay off for every game, on every Steam account, and puts their launch options back. Your own options stay.</p>
         <button type="button" class="secondary" id="restore-all">Restore all games</button>
       </section>
 
       <section class="setting-block danger">
-        <h3>Uninstall CachyPlay</h3>
+        <h2>Uninstall CachyPlay</h2>
         <p>Takes care of every game first, then removes CachyPlay's files. Bug reports on your Desktop are never deleted.</p>
         <label class="check"><input type="checkbox" id="keep-settings" checked /> Keep the settings that made my games work (written into Steam)</label>
         <label class="check"><input type="checkbox" id="keep-backups" checked /> Keep save and settings backups</label>
         <button type="button" class="danger-btn" id="uninstall">Uninstall CachyPlay</button>
       </section>
-
-      <div class="dialog-actions">
-        <button class="secondary" value="close">Close</button>
-      </div>
-    </form>
-  </dialog>
+    </div>
+  </section>
 
   <dialog id="update-dialog">
     <form method="dialog" class="dialog-body">

@@ -16,7 +16,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::Command;
 use std::time::Instant;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LaunchRecord {
     pub app_id: String,
     pub started_at: String,
@@ -28,6 +28,29 @@ pub struct LaunchRecord {
     pub applied: Vec<String>,
     pub skipped: Vec<String>,
     pub prep_error: Option<String>,
+    /// Written when the game starts and cleared when it closes. Still true after hours means the
+    /// game (or CachyPlay with it) was killed, e.g. after a GPU hang, without closing normally.
+    #[serde(default)]
+    pub running: bool,
+}
+
+/// A launch still marked running after this long didn't close normally.
+pub const STALE_RUNNING_SECS: i64 = 6 * 3600;
+
+impl LaunchRecord {
+    /// Turn a launch that never recorded its end into a failed one once it's clearly over.
+    pub fn settle(mut self, now: chrono::DateTime<chrono::Local>) -> Self {
+        if self.running {
+            let age = chrono::DateTime::parse_from_rfc3339(&self.started_at)
+                .map(|t| (now - t.with_timezone(&chrono::Local)).num_seconds())
+                .unwrap_or(i64::MAX);
+            if age > STALE_RUNNING_SECS {
+                self.running = false;
+                self.failed = true;
+            }
+        }
+        self
+    }
 }
 
 pub fn app_id_from_env() -> Option<String> {
@@ -105,8 +128,33 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
         );
     }
 
-    let start = Instant::now();
     let mut passthrough = prep_error.is_some() || plan_is_empty(&plan);
+    // Note the launch right away, so a game that hangs (and never returns here) still shows up.
+    let record_path = app_id.as_ref().map(|id| {
+        let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        paths.launches().join(format!("{id}-{stamp}.json"))
+    });
+    if let (Some(id), Some(path)) = (&app_id, &record_path) {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let rec = LaunchRecord {
+                app_id: id.clone(),
+                started_at: started_at.clone(),
+                passthrough,
+                applied: if passthrough {
+                    vec![]
+                } else {
+                    plan.applied.clone()
+                },
+                skipped: plan.skipped.clone(),
+                prep_error: prep_error.clone(),
+                running: true,
+                ..Default::default()
+            };
+            let _ = write_json(path, &rec);
+        }));
+    }
+
+    let start = Instant::now();
     let status = match build(&command, &plan, passthrough).status() {
         Ok(s) => Ok(s),
         Err(e) if !passthrough => {
@@ -158,9 +206,12 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
                 },
                 skipped: plan.skipped.clone(),
                 prep_error: prep_error.clone(),
+                running: false,
             };
-            let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-            let _ = write_json(&paths.launches().join(format!("{id}-{stamp}.json")), &rec);
+            if let Some(path) = &record_path {
+                let _ = write_json(path, &rec);
+            }
+            crate::housekeeping::trim(paths);
             if failed {
                 eprintln!(
                     "cachyplay: the game closed after {:.0}s (exit {:?}). To get help, run: cachyplay report {id}",
@@ -260,6 +311,7 @@ pub fn recent_launches(paths: &Paths, app_id: &str, max: usize) -> Vec<LaunchRec
         .iter()
         .rev()
         .take(max)
-        .filter_map(|p| crate::manage::read_json(p))
+        .filter_map(|p| crate::manage::read_json::<LaunchRecord>(p))
+        .map(|r| r.settle(chrono::Local::now()))
         .collect()
 }

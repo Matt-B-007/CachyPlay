@@ -80,8 +80,124 @@ pub fn read_capped(path: &Path, head: usize, tail: usize) -> Option<String> {
     Some(out)
 }
 
+/// Lines worth keeping from the middle of a long Proton log: errors and warnings, graphics
+/// (DXVK, VKD3D, Vulkan), and which of the game's own files and graphics libraries loaded.
+pub static IMPORTANT_LOG_LINE: &[&str] = &[
+    "err:",
+    "warn:  ",
+    "info:  ",
+    "DXVK",
+    "VKD3D",
+    "vkd3d",
+    "Vulkan",
+    "VK_ERROR",
+    "DEVICE_LOST",
+    "steamapps",
+    "d3d11",
+    "d3d12",
+    "dxgi",
+    "nvapi",
+    "nvngx",
+    "Unhandled exception",
+    "page fault",
+];
+
+/// Like `read_capped`, but also keeps (up to 600) lines from the cut middle that contain any of
+/// `keep`, so a long log still shows its errors and graphics setup.
+pub fn read_capped_keep(path: &Path, head: usize, tail: usize, keep: &[&str]) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= head + tail {
+        return Some(text.into_owned());
+    }
+    let middle = &lines[head..lines.len() - tail];
+    let kept: Vec<&str> = middle
+        .iter()
+        .copied()
+        .filter(|l| keep.iter().any(|k| l.contains(k)))
+        .take(600)
+        .collect();
+    let mut out = lines[..head].join("\n");
+    out.push_str(&format!(
+        "\n--- [{} LINES CUT; KEPT {} IMPORTANT ONES BELOW] ---\n",
+        middle.len() - kept.len(),
+        kept.len()
+    ));
+    if !kept.is_empty() {
+        out.push_str(&kept.join("\n"));
+        out.push_str("\n--- [END OF KEPT LINES] ---\n");
+    }
+    out.push_str(&lines[lines.len() - tail..].join("\n"));
+    out.push('\n');
+    Some(out)
+}
+
+/// Write a new version of one of Steam's VDF files and check it: the file must read back exactly
+/// as written, still parse, and differ from the old version only in the values under `allowed`
+/// (lower-cased key paths, "a/b/c"). Otherwise the old file is put back and the write fails, so
+/// a bug can never damage the rest of Steam's settings.
+pub fn verified_vdf_write(
+    path: &Path,
+    old: &str,
+    new: &str,
+    allowed: &[String],
+) -> anyhow::Result<()> {
+    use anyhow::{bail, Context};
+    let before = crate::vdf::Doc::parse(old)?.flatten();
+    let after = crate::vdf::Doc::parse(new)
+        .context("the new version of the file doesn't parse; nothing was written")?
+        .flatten();
+    let touched = |k: &str| {
+        allowed
+            .iter()
+            .any(|a| k == a || k.starts_with(&format!("{a}/")) || a.starts_with(k))
+    };
+    let changed: Vec<&String> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|k| before.get(*k) != after.get(*k) && !touched(k))
+        .collect();
+    if let Some(k) = changed.first() {
+        bail!(
+            "refusing to write {}: the change would also touch \"{k}\"",
+            path.display()
+        );
+    }
+    atomic_write(path, new.as_bytes())?;
+    let back = std::fs::read_to_string(path).unwrap_or_default();
+    if back != new {
+        let _ = atomic_write(path, old.as_bytes());
+        bail!(
+            "{} didn't read back as written, so the original was restored",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verified_vdf_write_only_allows_the_named_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("localconfig.vdf");
+        let old = "\"Root\"\n{\n\t\"apps\"\n\t{\n\t\t\"10\"\n\t\t{\n\t\t\t\"LaunchOptions\"\t\t\"a\"\n\t\t}\n\t}\n\t\"Other\"\t\t\"keep\"\n}\n";
+        std::fs::write(&f, old).unwrap();
+        let allowed = vec!["root/apps/10/launchoptions".to_string()];
+        let good = old.replace("\"a\"", "\"b\"");
+        super::verified_vdf_write(&f, old, &good, &allowed).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), good);
+        // Touching anything else is refused and the file is left alone.
+        let bad = good.replace("keep", "changed");
+        let e = super::verified_vdf_write(&f, &good, &bad, &allowed).unwrap_err();
+        assert!(e.to_string().contains("root/other"), "{e}");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), good);
+        // A version that doesn't parse is never written.
+        assert!(super::verified_vdf_write(&f, &good, "\"Root\" {", &allowed).is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), good);
+    }
+
     use super::*;
 
     #[test]
@@ -131,6 +247,14 @@ mod tests {
         fs::write(&p, body).unwrap();
         let out = read_capped(&p, 3, 4).unwrap();
         assert!(out.starts_with("line0\nline1\nline2\n--- [TRUNCATED 93 LINES] ---\nline96"));
+        let mut text: String = (0..100).map(|i| format!("line{i}\n")).collect();
+        text = text.replace("line50\n", "err: device lost\n");
+        fs::write(&p, &text).unwrap();
+        let kept = read_capped_keep(&p, 3, 4, &["err:"]).unwrap();
+        assert!(
+            kept.contains("KEPT 1 IMPORTANT") && kept.contains("err: device lost"),
+            "{kept}"
+        );
         assert!(out.ends_with("line99\n"));
     }
 }

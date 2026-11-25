@@ -166,7 +166,7 @@ impl Steam {
     }
 
     pub fn library_folders(&self) -> Vec<PathBuf> {
-        let mut out = vec![self.root.clone()];
+        let mut out = vec![fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone())];
         let path = self.root.join("steamapps/libraryfolders.vdf");
         if let Ok(text) = fs::read_to_string(path) {
             if let Ok(doc) = Doc::parse(&text) {
@@ -324,6 +324,48 @@ pub fn is_running_in(proc_root: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Real-world Steam folder shapes: a second library on another drive with spaces and
+    /// non-English letters in its path, the main library listed again through a symlink, and
+    /// a game in each.
+    #[test]
+    fn several_libraries_with_spaces_and_symlinks() {
+        let f = crate::testutil::FakeSteam::new();
+        let root = f.steam_root();
+        let other = f.home().join("Spiele Bibliothek/Steam Läufwerk");
+        std::fs::create_dir_all(other.join("steamapps/common/Hades II")).unwrap();
+        std::fs::write(
+            other.join("steamapps/appmanifest_1145350.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"1145350\"\n\t\"name\"\t\t\"Hades II\"\n\t\"installdir\"\t\t\"Hades II\"\n}\n",
+        )
+        .unwrap();
+        let link = f.home().join(".steam/steam");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        std::fs::write(
+            root.join("steamapps/libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n}}\n",
+                link.display(),
+                other.display()
+            ),
+        )
+        .unwrap();
+        let steam = Steam::locate(f.home()).unwrap();
+        let libs = steam.library_folders();
+        assert_eq!(
+            libs.len(),
+            2,
+            "the symlinked main library isn't counted twice: {libs:?}"
+        );
+        let hades = steam
+            .find_game("1145350")
+            .expect("game in the second library");
+        assert_eq!(hades.name, "Hades II");
+        assert!(hades
+            .install_dir
+            .ends_with("Steam Läufwerk/steamapps/common/Hades II"));
+    }
+
     use super::*;
 
     #[test]

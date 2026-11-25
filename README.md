@@ -31,22 +31,18 @@ Installer options: `--beta`, `--from-source`, `--no-launch`. The desktop app nee
 
 ## Use
 
-Open **CachyPlay** from your app menu. Your games are listed on the left; any that crashed recently are pinned at the top under **Needs attention**. Pick a game and CachyPlay tells you in one sentence how it's doing, with one main button for the next step (for example **Apply recommended fix** or **Turn on CachyPlay**). The **Fixes** tab lists every suggestion, the **Settings** tab shows exactly what CachyPlay changes and why, and **History** lists crashes and launches. Then start the game from Steam as usual. The bug icon at the top right saves and lists bug reports; the gear icon opens settings, updates and uninstall.
+Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix, red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. After you play, CachyPlay asks "Did it work?", and your answer decides what it suggests next.
 
-Close Steam before turning games on or off: Steam rewrites its settings when it exits and would undo the change. The app tells you when Steam is open.
+- **Fixes** lists every suggestion, most likely first, each with Undo.
+- **Settings** (per game) shows exactly what CachyPlay changes, OBS game capture, the line to keep your settings without CachyPlay, and **Reset the game's Windows files**.
+- **History** lists crashes and starts, and has **Tell the developer**: a short report to post in the game's Steam discussions.
+- When a game is broken, a card compares it with games that run fine on your PC.
 
-Everything is also available from the terminal:
+The gear icon opens Settings: updates, a **PC check** for common Linux gaming problems, light/dark theme (it can follow your KDE colors), big-screen mode for the TV with controller support, optional ProtonDB ratings, and uninstall. Problems the PC check finds also show as a banner.
 
-```bash
-cachyplay list                 # your games, and whether CachyPlay is on for each
-cachyplay status 1240440       # what CachyPlay changes, and tweaks you made yourself
-cachyplay apply 1240440        # turn CachyPlay on for a game
-cachyplay undo 1240440         # turn it off and restore your launch options
-cachyplay report 1240440       # save a bug report zip to your Desktop
-cachyplay doctor               # check this PC for common problems
-```
+From a terminal: `cachyplay doctor` (PC check and self-test), `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo]`, `cachyplay report <appid>`.
 
-Then start the game from Steam as usual.
+Need help? See [SUPPORT.md](SUPPORT.md). Making a release? See [RELEASING.md](RELEASING.md).
 
 ## How it works
 

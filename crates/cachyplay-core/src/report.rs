@@ -128,10 +128,11 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
         .map(|g| recent_launches(paths, &g.app_id, 5))
         .unwrap_or_default();
     let proton_log = game.and_then(|g| {
-        read_capped(
+        crate::fsutil::read_capped_keep(
             &paths.home.join(format!("steam-{}.log", g.app_id)),
             HEAD,
             TAIL,
+            crate::fsutil::IMPORTANT_LOG_LINE,
         )
     });
     let unity_logs: Vec<(String, String)> = match (game, ctx) {
@@ -192,6 +193,10 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
                 s.push_str(&format!("- Runs with: {runs}\n"));
             }
             match launches.first() {
+                Some(l) if l.running => s.push_str(&format!(
+                    "- CachyPlay is on. The last launch started at {} and hasn't closed yet: the game is still running, or it hung (for example after a GPU crash).\n",
+                    l.started_at
+                )),
                 Some(l) => s.push_str(&format!(
                     "- Last launch through CachyPlay: {}, ran {:.0}s, {}{}\n",
                     l.started_at,
@@ -203,7 +208,41 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
                     },
                     if l.failed { " (FAILED)" } else { "" }
                 )),
+                None if ctx.is_some_and(|c| c.status(g).is_ok_and(|st| st.applied)) => s.push_str(
+                    "- CachyPlay is on for this game, but no launch through it has finished yet (the game may still be running, or hung).\n",
+                ),
                 None => s.push_str("- CachyPlay isn't turned on for this game, so no launch timing was recorded.\n"),
+            }
+            if let Some(c) = ctx {
+                let sessions = crate::crashmatch::parse_steam_sessions(&c.steam.console_logs());
+                let crash_refs: Vec<&crate::crashmatch::CrashEvent> = events.iter().collect();
+                let runs = crate::history::runs(&sessions, &g.app_id, &crash_refs);
+                if !runs.is_empty() {
+                    s.push_str("\n## Recent starts (from Steam's log, newest first)\n\n");
+                    for r in runs.iter().rev().take(12) {
+                        let ran = r
+                            .session
+                            .duration()
+                            .map(|d| format!("ran {}", crate::history::duration_text(d)))
+                            .unwrap_or_else(|| "still running".into());
+                        let tool = r
+                            .session
+                            .tool
+                            .as_deref()
+                            .map(|t| format!(" with {}", crate::compat::friendly(t)))
+                            .unwrap_or_default();
+                        let what = match r.outcome {
+                            crate::history::Outcome::Crashed => " — GPU driver crash",
+                            crate::history::Outcome::Short => " — closed within 3 minutes",
+                            crate::history::Outcome::Played => " — played normally",
+                            _ => "",
+                        };
+                        s.push_str(&format!(
+                            "- {}: {ran}{tool}{what}\n",
+                            r.session.start.format("%Y-%m-%d %H:%M")
+                        ));
+                    }
+                }
             }
         }
         None => s.push_str("General report (not tied to one game).\n"),

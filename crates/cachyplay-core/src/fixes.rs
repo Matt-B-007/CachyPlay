@@ -27,6 +27,9 @@ pub struct Fix {
     /// Diagnostic-only fixes (like PROTON_LOG=1) that should be removed after use.
     #[serde(default)]
     pub temporary: bool,
+    /// What the player said when asked "Did it work?" (true = yes). Beats CachyPlay's own guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -82,6 +85,16 @@ pub fn remove(paths: &Paths, app_id: &str, id: &str) -> Result<bool> {
     Ok(all.fixes.len() != before)
 }
 
+/// Record the player's answer to "Did it work?" for an applied fix.
+pub fn set_verdict(paths: &Paths, app_id: &str, id: &str, worked: bool) -> Result<()> {
+    let mut all = load(paths, app_id);
+    let Some(f) = all.fixes.iter_mut().find(|f| f.id == id) else {
+        bail!("that fix isn't applied to this game");
+    };
+    f.verdict = Some(worked);
+    write_json(&path(paths, app_id), &all)
+}
+
 /// Every game that has fixes applied.
 pub fn games_with_fixes(paths: &Paths) -> Vec<String> {
     fs::read_dir(paths.data.join("fixes"))
@@ -113,6 +126,7 @@ mod tests {
             args: vec![],
             applied_at: String::new(),
             temporary: false,
+            verdict: None,
         }
     }
 

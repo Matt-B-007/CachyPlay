@@ -52,6 +52,15 @@ impl Default for Channel {
 pub struct Settings {
     #[serde(default)]
     pub channel: Channel,
+    /// Look up games' ProtonDB ratings (sends only the AppID). Off unless turned on.
+    #[serde(default)]
+    pub protondb: bool,
+    /// Bigger text and controller-friendly navigation, for the couch.
+    #[serde(default)]
+    pub big_screen: bool,
+    /// "system" (follow the desktop), "dark" or "light".
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 impl Settings {
@@ -225,10 +234,39 @@ fn gh_ready() -> bool {
     sys::run("gh", &["auth", "status"], NET_TIMEOUT).is_some_and(|(ok, _, _)| ok)
 }
 
-fn fetch_releases() -> Result<Vec<Release>> {
+/// Releases, from a copy at most a day old unless `force` (the user pressed "Check for updates").
+/// GitHub allows 60 requests an hour without signing in, so the background check stays polite.
+fn releases_cached(paths: &Paths, force: bool) -> Result<Vec<Release>> {
+    let cache = paths.state.join("releases.json");
+    if !force && std::env::var_os("CACHYPLAY_RELEASES_FILE").is_none() {
+        let fresh = fs::metadata(&cache)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age < std::time::Duration::from_secs(20 * 3600));
+        if fresh {
+            if let Ok(r) = fs::read_to_string(&cache)
+                .map_err(anyhow::Error::from)
+                .and_then(|t| parse_releases(&t))
+            {
+                return Ok(r);
+            }
+        }
+    }
+    let raw = fetch_raw()?;
+    let releases = parse_releases(&raw)?;
+    if std::env::var_os("CACHYPLAY_RELEASES_FILE").is_none() {
+        let _ = fs::create_dir_all(&paths.state);
+        let _ = crate::fsutil::atomic_write(&cache, raw.as_bytes());
+    }
+    Ok(releases)
+}
+
+/// GitHub's answer, as text.
+fn fetch_raw() -> Result<String> {
     // Tests and development: read a saved API response instead of asking GitHub.
     if let Some(p) = std::env::var_os("CACHYPLAY_RELEASES_FILE") {
-        return parse_releases(&fs::read_to_string(p)?);
+        return Ok(fs::read_to_string(p)?);
     }
     let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
     if let Some((true, body, _)) = sys::run(
@@ -243,7 +281,7 @@ fn fetch_releases() -> Result<Vec<Release>> {
         ],
         NET_TIMEOUT,
     ) {
-        return parse_releases(&body);
+        return Ok(body);
     }
     // Private repository (or GitHub unreachable via curl): try the signed-in GitHub CLI.
     if let Some((true, body, _)) = sys::run(
@@ -251,7 +289,7 @@ fn fetch_releases() -> Result<Vec<Release>> {
         &["api", &format!("repos/{REPO}/releases?per_page=30")],
         NET_TIMEOUT,
     ) {
-        return parse_releases(&body);
+        return Ok(body);
     }
     if sys::which("curl").is_none() {
         bail!("curl is not installed, so CachyPlay can't check for updates.");
@@ -260,6 +298,15 @@ fn fetch_releases() -> Result<Vec<Release>> {
 }
 
 pub fn check(paths: &Paths) -> UpdateStatus {
+    check_with(paths, true)
+}
+
+/// The startup check: uses a copy of GitHub's answer up to a day old.
+pub fn check_background(paths: &Paths) -> UpdateStatus {
+    check_with(paths, false)
+}
+
+fn check_with(paths: &Paths, force: bool) -> UpdateStatus {
     let settings = Settings::load(paths);
     let kind = install_kind(paths);
     let mut status = UpdateStatus {
@@ -274,7 +321,7 @@ pub fn check(paths: &Paths) -> UpdateStatus {
         newer_beta: None,
         no_releases: false,
     };
-    match fetch_releases() {
+    match releases_cached(paths, force) {
         Ok(releases) => {
             let latest = pick(&releases, settings.channel);
             let cur = Version::parse(crate::VERSION);
@@ -330,6 +377,11 @@ pub fn install(paths: &Paths, release: &Release) -> Result<String> {
         })
     };
     let got = curl_ok(&release.asset_url, &asset_path) && curl_ok(&release.sums_url, &sums_path);
+    if got {
+        // The signature is optional until a signing key is set up (see RELEASING.md).
+        let sig_url = release.sums_url.as_ref().map(|u| format!("{u}.minisig"));
+        let _ = curl_ok(&sig_url, &dir.join("SHA256SUMS.txt.minisig"));
+    }
     if !got {
         if !gh_ready() {
             bail!("Couldn't download the update from GitHub.");
@@ -346,7 +398,7 @@ pub fn install(paths: &Paths, release: &Release) -> Result<String> {
                 "-p",
                 asset,
                 "-p",
-                "SHA256SUMS.txt",
+                "SHA256SUMS.txt*",
                 "-D",
                 &d,
                 "--clobber",
@@ -363,6 +415,27 @@ pub fn install(paths: &Paths, release: &Release) -> Result<String> {
     install_from_files(paths, &asset_path, &sums_path, &release.tag)
 }
 
+/// The public key releases are signed with (packaging/minisign.pub). Empty until the maintainer
+/// creates a key; then every update must carry a valid signature of its checksum file.
+const SIGNING_KEY: &str = include_str!("../../../packaging/minisign.pub");
+
+/// Check the checksum file's minisign signature, if this build knows a signing key.
+pub fn verify_signature(key: &str, sums_text: &str, sig_path: &Path) -> Result<()> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Ok(());
+    }
+    let pk = minisign_verify::PublicKey::decode(key)
+        .or_else(|_| minisign_verify::PublicKey::from_base64(key.lines().last().unwrap_or("")))
+        .map_err(|e| anyhow::anyhow!("CachyPlay's signing key is invalid: {e}"))?;
+    let sig_text = fs::read_to_string(sig_path)
+        .context("This update isn't signed, so CachyPlay won't install it.")?;
+    let sig = minisign_verify::Signature::decode(&sig_text)
+        .map_err(|e| anyhow::anyhow!("The update's signature is unreadable: {e}"))?;
+    pk.verify(sums_text.as_bytes(), &sig, false)
+        .map_err(|_| anyhow::anyhow!("The update's signature doesn't match. It may have been tampered with; nothing was installed."))
+}
+
 /// Verify and install from an already-downloaded release archive.
 pub fn install_from_files(paths: &Paths, archive: &Path, sums: &Path, tag: &str) -> Result<String> {
     let name = archive
@@ -371,6 +444,7 @@ pub fn install_from_files(paths: &Paths, archive: &Path, sums: &Path, tag: &str)
         .to_string_lossy()
         .into_owned();
     let sums_text = fs::read_to_string(sums).context("checksum file missing")?;
+    verify_signature(SIGNING_KEY, &sums_text, &sums.with_extension("txt.minisig"))?;
     let expected = sums_text
         .lines()
         .find_map(|l| {
@@ -494,6 +568,22 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn checks_update_signatures_when_a_key_is_set() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signing");
+        let key = fs::read_to_string(dir.join("minisign.pub")).unwrap();
+        let sums = fs::read_to_string(dir.join("SHA256SUMS.txt")).unwrap();
+        let sig = dir.join("SHA256SUMS.txt.minisig");
+        verify_signature(&key, &sums, &sig).unwrap();
+        // A changed checksum file is refused.
+        let e = verify_signature(&key, &sums.replace("abc123", "evil99"), &sig).unwrap_err();
+        assert!(e.to_string().contains("doesn't match"), "{e}");
+        // No signature with a key set: refused.
+        assert!(verify_signature(&key, &sums, &dir.join("missing.minisig")).is_err());
+        // No key yet: unsigned releases still install (checksums are still checked).
+        verify_signature("", &sums, &dir.join("missing.minisig")).unwrap();
+    }
+
     use super::*;
 
     #[test]
@@ -535,6 +625,7 @@ mod tests {
         assert_eq!(Settings::load(&p).channel, default_channel());
         Settings {
             channel: Channel::Beta,
+            ..Default::default()
         }
         .save(&p)
         .unwrap();

@@ -69,8 +69,28 @@ enum Cmd {
         /// on or off
         state: Option<String>,
     },
-    /// Check this PC for common gaming problems
+    /// Show or change a game's compatibility tool (Proton version), like Steam's
+    /// Properties → Compatibility. `cachyplay proton 5335510` lists them,
+    /// `cachyplay proton 5335510 GE-Proton11-12` switches, `… undo` puts it back. Steam must be closed
+    Proton {
+        app_id: String,
+        /// Tool name (from the list), or `undo`
+        tool: Option<String>,
+    },
+    /// Check this PC for common gaming problems, and CachyPlay's own setup
     Doctor,
+    /// Set a game's Windows files (Proton prefix) aside so Steam makes fresh ones; --undo puts them back
+    ResetPrefix {
+        app_id: String,
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Answer "Did it work?" for a fix: `cachyplay worked <appid> <fix-id> yes|no`
+    Worked {
+        app_id: String,
+        fix: String,
+        answer: String,
+    },
     /// Install this downloaded copy to ~/.local/bin (its own location)
     Install,
     /// Restore all games, then remove CachyPlay's files
@@ -150,6 +170,7 @@ fn ctx(paths: &Paths) -> Result<Ctx> {
 fn real_main() -> Result<ExitCode> {
     let cli = Cli::parse();
     let paths = Paths::from_env()?;
+    cachyplay_core::housekeeping::protect_settings(&paths);
     match cli.cmd {
         Cmd::List => {
             let c = ctx(&paths)?;
@@ -326,6 +347,60 @@ fn real_main() -> Result<ExitCode> {
                     Some(_) => println!("  Apply:  cachyplay fix {app_id} {}", sg.id),
                     None => sg.steps.iter().for_each(|st| println!("  Step:   {st}")),
                 }
+                match (&sg.switch_tool, sg.switched) {
+                    (Some(_), true) => println!("  Undo:   cachyplay proton {app_id} undo"),
+                    (Some(t), false) => println!("  Switch: cachyplay proton {app_id} {}", t.name),
+                    _ => {}
+                }
+            }
+        }
+        Cmd::Proton { app_id, tool } => {
+            let c = ctx(&paths)?;
+            let g = c
+                .steam
+                .find_game(&app_id)
+                .with_context(|| format!("game {app_id} is not installed"))?;
+            let tools =
+                cachyplay_core::compat::installed(&c.steam.root, &c.steam.library_folders());
+            match tool.as_deref() {
+                None => {
+                    println!(
+                        "{} uses: {}",
+                        g.name,
+                        c.steam
+                            .compat_tool(&app_id)
+                            .unwrap_or_else(|| "Steam's default".into())
+                    );
+                    println!("Installed compatibility tools:");
+                    for t in &tools {
+                        println!("  {:<24} {}", t.name, t.display);
+                    }
+                    println!(
+                        "Switch with: cachyplay proton {app_id} <name>   (Steam must be closed)"
+                    );
+                }
+                Some("undo") => {
+                    cachyplay_core::compat::undo(&c, &app_id)?;
+                    println!(
+                        "{} is back on {}.",
+                        g.name,
+                        c.steam
+                            .compat_tool(&app_id)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "Steam's default".into())
+                    );
+                }
+                Some(name) => {
+                    let t = tools
+                        .iter()
+                        .find(|t| t.name == name || t.folder == name)
+                        .with_context(|| format!("{name:?} isn't installed. Run `cachyplay proton {app_id}` to see what is."))?;
+                    cachyplay_core::compat::switch(&c, &app_id, t)?;
+                    println!(
+                        "{} now uses {}. Start it from Steam to try. Undo: cachyplay proton {app_id} undo",
+                        g.name, t.display
+                    );
+                }
             }
         }
         Cmd::Fix { app_id, id, undo } => {
@@ -370,6 +445,33 @@ fn real_main() -> Result<ExitCode> {
             }
         }
         Cmd::Doctor => doctor(&paths)?,
+        Cmd::ResetPrefix { app_id, undo } => {
+            let c = ctx(&paths)?;
+            let g = c
+                .steam
+                .find_game(&app_id)
+                .with_context(|| format!("game {app_id} is not installed"))?;
+            if undo {
+                cachyplay_core::prefix::undo(&c, &g)?;
+                println!("Put {}'s earlier Windows files back.", g.name);
+            } else {
+                let kept = cachyplay_core::prefix::reset(&c, &g)?;
+                println!("Set {}'s Windows files aside at {}. Steam makes fresh ones on the next start; `cachyplay reset-prefix {app_id} --undo` puts them back.", g.name, kept.display());
+            }
+        }
+        Cmd::Worked {
+            app_id,
+            fix,
+            answer,
+        } => {
+            let yes = match answer.as_str() {
+                "yes" | "y" => true,
+                "no" | "n" => false,
+                _ => bail!("answer yes or no"),
+            };
+            cachyplay_core::fixes::set_verdict(&paths, &app_id, &fix, yes)?;
+            println!("Noted.");
+        }
         Cmd::Install => {
             let exe = std::env::current_exe()?;
             let bin = install::install_user(&paths, &exe)?;
@@ -653,6 +755,33 @@ fn doctor(paths: &Paths) -> Result<()> {
             ok(cachyplay_core::sys::which(tool).is_some())
         );
     }
+    let show = |title: &str, checks: Vec<cachyplay_core::pccheck::Check>| {
+        use cachyplay_core::pccheck::Level;
+        println!("\n{title}");
+        for c in checks {
+            let tag = match c.level {
+                Level::Ok => "ok  ",
+                Level::Warn => "WARN",
+                Level::Bad => "BAD ",
+                Level::Info => "info",
+            };
+            println!("[{tag}] {}: {}", c.title, c.detail);
+            if let Some(cmd) = c.command {
+                println!("       Fix: {cmd}");
+            }
+        }
+    };
+    let libraries = Ctx::new(paths.clone())
+        .map(|c| c.steam.library_folders())
+        .unwrap_or_default();
+    show(
+        "PC check",
+        cachyplay_core::pccheck::pc_checks(&cachyplay_core::pccheck::Root::system(), &libraries),
+    );
+    show(
+        "CachyPlay self-test",
+        cachyplay_core::pccheck::self_test(paths),
+    );
     Ok(())
 }
 

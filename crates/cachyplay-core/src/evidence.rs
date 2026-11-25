@@ -91,7 +91,8 @@ pub fn all_launches(paths: &Paths) -> Vec<LaunchRecord> {
     let mut v: Vec<LaunchRecord> = fs::read_dir(paths.launches())
         .map(|rd| {
             rd.flatten()
-                .filter_map(|e| crate::manage::read_json(&e.path()))
+                .filter_map(|e| crate::manage::read_json::<LaunchRecord>(&e.path()))
+                .map(|r| r.settle(chrono::Local::now()))
                 .collect()
         })
         .unwrap_or_default();
@@ -120,15 +121,7 @@ pub fn driver_updates(pacman_log: &str) -> Vec<DriverUpdate> {
                 .trim_start()
                 .strip_prefix("upgraded ")?;
             let (pkg, vers) = rest.split_once(' ')?;
-            if ![
-                "nvidia-utils",
-                "mesa",
-                "linux-cachyos",
-                "nvidia-open-dkms",
-                "linux-cachyos-nvidia-open",
-            ]
-            .contains(&pkg)
-            {
+            if !is_graphics_package(pkg) {
                 return None;
             }
             let (from, to) = vers
@@ -150,6 +143,20 @@ pub fn driver_updates(pacman_log: &str) -> Vec<DriverUpdate> {
         .collect()
 }
 
+/// Graphics driver and kernel packages: every NVIDIA package (nvidia-utils, lib32-nvidia-utils,
+/// nvidia-settings, nvidia-open-dkms, …), Mesa and its Vulkan drivers, and CachyOS kernels with
+/// their NVIDIA modules.
+pub fn is_graphics_package(pkg: &str) -> bool {
+    let p = pkg.strip_prefix("lib32-").unwrap_or(pkg);
+    p.starts_with("nvidia")
+        || p.contains("-nvidia")
+        || p == "mesa"
+        || p.starts_with("vulkan-")
+        || p == "linux-cachyos"
+        || p == "linux-cachyos-lts"
+        || p.starts_with("linux-cachyos-") && p.ends_with("-nvidia-open")
+}
+
 pub fn read_driver_updates() -> Vec<DriverUpdate> {
     fs::read_to_string("/var/log/pacman.log")
         .map(|t| driver_updates(&t))
@@ -168,6 +175,21 @@ mod tests {
                    [2026-11-23T07:00:01-0800] [ALPM] installed mesa (1)\n";
         let u = driver_updates(log);
         assert_eq!(u.len(), 2);
+        for p in [
+            "nvidia-utils",
+            "lib32-nvidia-utils",
+            "nvidia-settings",
+            "nvidia-open-dkms",
+            "linux-cachyos-nvidia-open",
+            "linux-cachyos-lts-nvidia-open",
+            "vulkan-radeon",
+            "lib32-mesa",
+        ] {
+            assert!(is_graphics_package(p), "{p}");
+        }
+        for p in ["firefox", "linux-cachyos-headers", "mesa-utils"] {
+            assert!(!is_graphics_package(p), "{p}");
+        }
         assert_eq!(u[0].package, "nvidia-utils");
         assert_eq!(u[0].from, "620.60.01-1");
         assert_eq!(u[0].to, "620.73.04-1");

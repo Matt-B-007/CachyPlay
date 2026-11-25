@@ -67,6 +67,37 @@ impl Doc {
         })
     }
 
+    /// Every string value keyed by its lower-cased path ("a/b/c"), to compare two versions of a
+    /// file. Repeated keys get a "#n" suffix so nothing is hidden.
+    pub fn flatten(&self) -> std::collections::BTreeMap<String, String> {
+        fn walk(
+            nodes: &[Node],
+            prefix: &str,
+            out: &mut std::collections::BTreeMap<String, String>,
+        ) {
+            for n in nodes {
+                let mut key = format!("{prefix}{}", n.key.to_ascii_lowercase());
+                let mut i = 1;
+                while out.contains_key(&key) || out.contains_key(&format!("{key}/")) {
+                    i += 1;
+                    key = format!("{prefix}{}#{i}", n.key.to_ascii_lowercase());
+                }
+                match &n.value {
+                    Value::Str { text, .. } => {
+                        out.insert(key, text.clone());
+                    }
+                    Value::Obj { children, .. } => {
+                        out.insert(format!("{key}/"), String::new());
+                        walk(children, &format!("{key}/"), out);
+                    }
+                }
+            }
+        }
+        let mut out = Default::default();
+        walk(&self.roots, "", &mut out);
+        out
+    }
+
     /// Look up a node by a case-insensitive key path, starting at the top level.
     pub fn lookup(&self, path: &[&str]) -> Option<&Node> {
         let (first, rest) = path.split_first()?;

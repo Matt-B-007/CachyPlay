@@ -27,6 +27,10 @@ impl FakeSteam {
             "\"UserLocalConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t\t\"apps\"\n\t\t\t\t{\n\t\t\t\t\t\"1240440\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"LastPlayed\"\t\t\"1763900000\"\n\t\t\t\t\t\t\"LaunchOptions\"\t\t\"%command% -nosplash\"\n\t\t\t\t\t}\n\t\t\t\t\t\"570\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"LastPlayed\"\t\t\"1\"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\t\"friends\"\n\t{\n\t\t\"PersonaName\"\t\t\"Tester\"\n\t}\n}\n",
         );
         w(
+            root.join("config/config.vdf"),
+            "\"InstallConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\t\t\t\t\"AutoUpdateWindowEnabled\"\t\t\"0\"\n\t\t\t}\n\t\t}\n\t}\n}\n",
+        );
+        w(
             root.join("steamapps/libraryfolders.vdf"),
             &format!(
                 "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n}}\n",
@@ -52,6 +56,10 @@ impl FakeSteam {
 
     pub fn home(&self) -> &Path {
         self.dir.path()
+    }
+
+    pub fn steam_root(&self) -> PathBuf {
+        self.home().join(".local/share/Steam")
     }
 
     pub fn localconfig(&self) -> PathBuf {

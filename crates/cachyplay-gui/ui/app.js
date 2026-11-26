@@ -428,7 +428,8 @@ function launchRow(l) {
     h("span", { class: "when" }, when(l.started_at)),
     h("span", {}, l.running ? "" : duration(l.runtime_secs)),
     l.running ? h("span", { class: "warn" }, "Running now, or stopped responding")
-      : l.failed ? h("span", { class: "bad" }, "Closed early") : h("span", { class: "good" }, "Ran normally"));
+      : l.failed ? h("span", { class: "bad" }, "Closed early") : h("span", { class: "good" }, "Ran normally"),
+    l.gpu ? h("span", { class: l.gpu_integrated ? "warn" : "muted" }, "On " + l.gpu.replace(/^the /, "")) : null);
 }
 
 /* ---------- suggested fixes ---------- */
@@ -508,6 +509,7 @@ function settingsTab(d) {
     !d.fix ? h("p", { class: "note" }, "No fix file for this game yet. CachyPlay still records each launch and helps with bug reports.") : null,
     d.fix && d.fix.notes ? h("p", { class: "note" }, d.fix.notes) : null)];
 
+  if (d.graphics_card) out.push(cardCard(d));
   out.push(obsCard(d));
 
   if (d.standalone_launch_options) {
@@ -544,7 +546,44 @@ function prefixCard(d) {
     h("div", { class: "actions" },
       ins.has_prefix ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("reset_prefix", d.summary.app_id, d.summary.name) }, "Reset Windows files") : null,
       ins.kept_prefixes ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("undo_prefix_reset", d.summary.app_id, d.summary.name) }, "Undo reset") : null,
+      ins.kept_prefixes ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("delete_kept_prefixes", d.summary.app_id, d.summary.name, ins.kept_size) }, ins.kept_size ? `Delete old copies (${ins.kept_size})` : "Delete old copies") : null,
       blocked ? h("span", { class: "muted" }, "Close Steam first.") : null));
+}
+
+function cardCard(d) {
+  const c = d.graphics_card;
+  let note;
+  if (!c.on) note = `Off. The game picks a chip by itself, which can be ${c.builtin}.`;
+  else if (!d.summary.enabled) note = "On, but CachyPlay is off for this game, so it isn't used. Turn CachyPlay on above.";
+  else if (c.last_was_builtin) note = `The last start still ran on ${c.builtin}. Check the game's own graphics settings for a display adapter option.`;
+  else if (c.last_used) note = `On. The last start ran on ${c.last_used}.`;
+  else note = `On. CachyPlay checks which chip the game uses the next time it runs.`;
+  return card("gpu",
+    h("div", { class: "obs-row" },
+      h("div", {},
+        h("h2", { class: "card-title" }, "Use the graphics card"),
+        h("p", { class: "muted" }, `This PC has ${c.card} and ${c.builtin}. Games should draw on the card; the built-in chip is much slower.`)),
+      h("button", {
+        class: "switch",
+        role: "switch",
+        "aria-checked": c.on ? "true" : "false",
+        "aria-label": `Use the graphics card for ${d.summary.name}`,
+        disabled: state.busy,
+        onclick: () => setPreferCard(d.summary.app_id, !c.on),
+      })),
+    h("p", { class: c.last_was_builtin && c.on ? "s-note warn" : "s-note" }, note));
+}
+
+async function setPreferCard(appId, on) {
+  state.busy = true;
+  try {
+    toast(await invoke("set_prefer_card", { appId, on }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  } finally {
+    state.busy = false;
+    await load();
+  }
 }
 
 function obsCard(d) {
@@ -591,7 +630,7 @@ function historyTab(d) {
       h("h2", { class: "card-title" }, "Graphics driver crashes"),
       d.crashes.length
         ? h("ul", { class: "rows" }, d.crashes.map((c) => h("li", {}, h("span", { class: "when" }, c.when), h("span", {}, c.what))))
-        : h("p", { class: "muted" }, "None recorded since the last restart.")),
+        : h("p", { class: "muted" }, "None in the last 30 days.")),
     card("",
       h("h2", { class: "card-title" }, "Starts through CachyPlay"),
       d.launches.length
@@ -682,7 +721,13 @@ async function setVerdict(appId, id, worked) {
   await load();
 }
 
-async function prefixAction(cmd, appId, name) {
+async function prefixAction(cmd, appId, name, size) {
+  if (cmd === "delete_kept_prefixes") {
+    const ok = await confirmDialog(`Delete the old copies of ${name}'s Windows files?`,
+      `This frees ${size || "their space"}, but Undo reset won't be possible any more. Saves kept only in those copies are deleted too. The game's current files aren't touched.`,
+      "Delete");
+    if (!ok) return;
+  }
   if (cmd === "reset_prefix") {
     const ok = await confirmDialog(`Reset ${name}'s Windows files?`,
       "They're set aside, not deleted, and Undo puts them back. The game's first start afterwards takes a little longer while Steam sets things up again.",
@@ -807,6 +852,13 @@ function renderUpdate() {
       await setChannel("beta");
       openUpdateDialog();
     };
+  } else if (u.stable_now && u.kind === "user") {
+    pill.hidden = true;
+    line.className = "status-line new";
+    line.textContent = `You're on beta v${u.current}, which is newer than the newest Stable version (${u.stable_now.tag}). You'll get Stable updates from the next one on, or switch now.`;
+    btn.hidden = false;
+    btn.textContent = `Switch to Stable now (${u.stable_now.tag})`;
+    btn.onclick = switchToStableNow;
   } else if (u.no_releases) {
     pill.hidden = true;
     line.className = "status-line";
@@ -815,6 +867,22 @@ function renderUpdate() {
     pill.hidden = true;
     line.className = "status-line good";
     line.textContent = `You have the newest ${CHANNEL_NAME[u.channel]} version (v${u.current}).`;
+  }
+}
+
+async function switchToStableNow() {
+  const btn = $("update-now-settings");
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  try {
+    const msg = await invoke("install_update", { toStable: true });
+    toast(msg, "success");
+    await invoke("restart_app");
+  } catch (e) {
+    toast(String(e), "error");
+  } finally {
+    btn.disabled = false;
+    renderUpdate();
   }
 }
 
@@ -1042,7 +1110,18 @@ async function setAppSetting(key, value) {
 async function applyDisplay() {
   const st = state.settings;
   const theme = st.theme || "system";
-  const dark = theme === "dark" || (theme === "system" && !window.matchMedia("(prefers-color-scheme: light)").matches);
+  // "Follow my desktop": ask the desktop itself, since the window often reports "light" when it
+  // simply doesn't know. If the desktop doesn't say either, use the dark theme.
+  let dark = theme === "dark";
+  if (theme === "system") {
+    let desk = null;
+    try {
+      desk = await invoke("desktop_theme");
+    } catch {
+      desk = null;
+    }
+    dark = desk ? desk === "dark" : true;
+  }
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   document.body.classList.toggle("big-screen", !!st.big_screen);
   let accent = null;

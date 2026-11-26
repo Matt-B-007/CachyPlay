@@ -5,15 +5,31 @@ a missing release, a test that only passed on one PC) are caught by it.
 
 ## Checklist
 
+Releases are automatic. GitHub publishes a release whenever the version in `Cargo.toml` is one
+that hasn't been released yet. There are no tags to make by hand.
+
 1. Bump `version` in the root `Cargo.toml` (`0.1.0-beta.N`, or `0.1.0` for stable), then
    `cargo update --workspace`.
 2. Add the changes to `CHANGELOG.md` under that version.
-3. Run `scripts/release-check.sh v0.1.0-beta.N`. It checks the version matches the tag, the
-   changelog mentions it, formatting, lints and all tests, makes a release build, installs it into
-   a throwaway home folder and runs it.
-4. Push the code, then push the tag `v0.1.0-beta.N`. The Release workflow builds the download and
-   publishes the release (as a pre-release when the version contains `-beta.`).
+3. Optional but recommended: `scripts/release-check.sh`. It runs everything GitHub will run, plus
+   an install into a throwaway home folder.
+4. Push to `main` (or upload with StowLock). The **Release** workflow then:
+   - stops quietly if that version is already released,
+   - refuses a version that ranks below an existing release (for example `0.1.0-beta.12` after
+     `0.1.0` is out; use `0.1.1-beta.1`),
+   - runs all tests (in two time zones) and publishes nothing if one fails,
+   - builds, tags the commit `vX.Y.Z[-beta.N]` and publishes the release, as a pre-release when the
+     version contains `-beta.`.
 5. On a real PC: update to it with the in-app **Update** button and start a game through it.
+
+Pushing changes without bumping the version runs CI only; nothing is released.
+
+## Version order
+
+`0.1.0-beta.11` < `0.1.0` < `0.1.1-beta.1` < `0.1.1`. A beta always ranks below the finished
+version with the same number, so a beta for after a stable release needs the next number. People
+on the Stable channel never get betas; people on Beta get whichever is highest, beta or stable.
+Someone on a beta newer than the newest stable who switches to Stable sees **Switch to Stable now**.
 
 ## Staged releases
 

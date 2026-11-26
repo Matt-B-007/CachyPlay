@@ -157,6 +157,9 @@ pub struct UpdateStatus {
     pub newer_beta: Option<Release>,
     /// GitHub answered, but no CachyPlay release has been published yet.
     pub no_releases: bool,
+    /// Channel set to Stable while running a beta that's newer than the newest stable: that
+    /// stable version, offered with a "Switch to Stable now" button (it's an older version).
+    pub stable_now: Option<Release>,
 }
 
 pub fn install_kind(paths: &Paths) -> InstallKind {
@@ -225,9 +228,20 @@ pub fn pick(releases: &[Release], channel: Channel) -> Option<Release> {
     releases
         .iter()
         .filter(|r| channel == Channel::Beta || !r.prerelease)
+        // A release whose build failed has nothing to download; offering it would only fail.
+        .filter(|r| r.asset.is_some())
         .filter_map(|r| Version::parse(&r.tag).map(|v| (v, r)))
         .max_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, r)| r.clone())
+}
+
+/// Running a beta newer than every stable release: the newest stable release, to go back to.
+/// None when running a stable version or when a newer stable exists (that's a normal update).
+pub fn stable_now(releases: &[Release], current: &str) -> Option<Release> {
+    let cur = Version::parse(current)?;
+    cur.pre.as_ref()?;
+    let stable = pick(releases, Channel::Stable)?;
+    (Version::parse(&stable.tag)? < cur).then_some(stable)
 }
 
 fn gh_ready() -> bool {
@@ -320,6 +334,7 @@ fn check_with(paths: &Paths, force: bool) -> UpdateStatus {
         error: None,
         newer_beta: None,
         no_releases: false,
+        stable_now: None,
     };
     match releases_cached(paths, force) {
         Ok(releases) => {
@@ -335,6 +350,9 @@ fn check_with(paths: &Paths, force: bool) -> UpdateStatus {
                 if newer(&beta) {
                     status.newer_beta = beta;
                 }
+            }
+            if !status.available && settings.channel == Channel::Stable {
+                status.stable_now = stable_now(&releases, crate::VERSION);
             }
             status.no_releases = releases.is_empty();
             status.latest = latest;
@@ -568,6 +586,38 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    fn rel(tag: &str, asset: bool) -> Release {
+        Release {
+            tag: tag.into(),
+            prerelease: tag.contains('-'),
+            notes: String::new(),
+            page: String::new(),
+            asset: asset.then(|| format!("cachyplay-{tag}-x86_64-linux.tar.zst")),
+            asset_url: None,
+            sums_url: None,
+        }
+    }
+
+    #[test]
+    fn skips_releases_without_a_download() {
+        // beta.9's build failed and it was published empty: never offer it.
+        let r = vec![rel("v0.1.0-beta.8", true), rel("v0.1.0-beta.9", false)];
+        assert_eq!(pick(&r, Channel::Beta).unwrap().tag, "v0.1.0-beta.8");
+    }
+
+    #[test]
+    fn switch_to_stable_now() {
+        let r = vec![rel("v0.1.0", true), rel("v0.1.1-beta.2", true)];
+        // On the newer beta with Stable chosen: offer to go back to 0.1.0.
+        assert_eq!(stable_now(&r, "0.1.1-beta.2").unwrap().tag, "v0.1.0");
+        // On a beta of 0.1.0: 0.1.0 is simply newer, a normal update, not this.
+        assert!(stable_now(&r, "0.1.0-beta.11").is_none());
+        // On stable already: nothing.
+        assert!(stable_now(&r, "0.1.0").is_none());
+        // No stable release yet: nothing to switch to.
+        assert!(stable_now(&[rel("v0.1.0-beta.10", true)], "0.1.0-beta.10").is_none());
+    }
+
     #[test]
     fn checks_update_signatures_when_a_key_is_set() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/signing");
@@ -601,7 +651,8 @@ mod tests {
       {"tag_name":"v0.2.0-beta.1","prerelease":true,"draft":false,"body":"beta notes","html_url":"https://x/b",
        "assets":[{"name":"cachyplay-v0.2.0-beta.1-x86_64-linux.tar.zst","browser_download_url":"https://x/b.tar.zst"},
                  {"name":"SHA256SUMS.txt","browser_download_url":"https://x/bsums"}]},
-      {"tag_name":"v0.1.0","prerelease":false,"draft":false,"body":"stable notes","html_url":"https://x/s","assets":[]},
+      {"tag_name":"v0.1.0","prerelease":false,"draft":false,"body":"stable notes","html_url":"https://x/s",
+       "assets":[{"name":"cachyplay-v0.1.0-x86_64-linux.tar.zst","browser_download_url":"https://x/s.tar.zst"}]},
       {"tag_name":"v9.9.9","prerelease":false,"draft":true,"body":"","html_url":"","assets":[]}
     ]"#;
 

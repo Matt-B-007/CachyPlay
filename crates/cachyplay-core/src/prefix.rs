@@ -7,9 +7,10 @@ use crate::manage::Ctx;
 use crate::steam::Game;
 use anyhow::{bail, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const KEPT: &str = ".cachyplay-kept-";
+const FRESH: &str = ".cachyplay-fresh-";
 
 /// Folders kept by earlier resets, newest first.
 pub fn kept(game: &Game) -> Vec<PathBuf> {
@@ -25,6 +26,73 @@ pub fn kept(game: &Game) -> Vec<PathBuf> {
     v.sort();
     v.reverse();
     v
+}
+
+/// Every copy CachyPlay set aside, in any Steam library: (folder, AppID, size in bytes).
+pub fn all_kept(libraries: &[PathBuf]) -> Vec<(PathBuf, String, u64)> {
+    let mut out = Vec::new();
+    for lib in libraries {
+        for e in fs::read_dir(lib.join("steamapps/compatdata"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let id = name
+                .split_once(KEPT)
+                .or_else(|| name.split_once(FRESH))
+                .map(|(id, _)| id.to_string());
+            if let Some(id) = id {
+                out.push((e.path(), id, dir_size(&e.path())));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Size of a folder's files. Doesn't follow links (prefixes link to system folders).
+pub fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).into_iter().flatten().flatten() {
+            let Ok(m) = fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            if m.is_dir() {
+                todo.push(e.path());
+            } else if m.is_file() {
+                total += m.len();
+            }
+        }
+    }
+    total
+}
+
+/// "3.2 GB"
+pub fn human_size(bytes: u64) -> String {
+    let gb = bytes as f64 / 1e9;
+    if gb >= 1.0 {
+        format!("{gb:.1} GB")
+    } else {
+        format!("{:.0} MB", (bytes as f64 / 1e6).max(1.0))
+    }
+}
+
+/// Delete the copies of a game's Windows files that resets set aside (after Undo is no longer
+/// wanted). Returns the space freed. The game's current Windows files are never touched.
+pub fn delete_kept(ctx: &Ctx, game: &Game) -> Result<u64> {
+    guard(ctx)?;
+    let mut freed = 0;
+    for (path, id, size) in all_kept(std::slice::from_ref(&game.library)) {
+        if id != game.app_id {
+            continue;
+        }
+        fs::remove_dir_all(&path)?;
+        freed += size;
+    }
+    Ok(freed)
 }
 
 fn guard(ctx: &Ctx) -> Result<()> {
@@ -63,9 +131,33 @@ pub fn undo(ctx: &Ctx, game: &Game) -> Result<()> {
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         fs::rename(
             &current,
-            current.with_file_name(format!("{}.cachyplay-fresh-{stamp}", game.app_id)),
+            current.with_file_name(format!("{}{FRESH}{stamp}", game.app_id)),
         )?;
     }
     fs::rename(&old, &current)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_and_sizes_kept_copies_without_following_links() {
+        let t = tempfile::tempdir().unwrap();
+        let cd = t.path().join("steamapps/compatdata");
+        let kept = cd.join("730.cachyplay-kept-2026-11-20_10-00-00/pfx/drive_c");
+        fs::create_dir_all(&kept).unwrap();
+        fs::write(kept.join("save.dat"), vec![0u8; 5000]).unwrap();
+        // Prefixes link to big system folders; those don't count.
+        std::os::unix::fs::symlink("/usr", kept.join("usr-link")).unwrap();
+        fs::create_dir_all(cd.join("730")).unwrap();
+        fs::create_dir_all(cd.join("570.cachyplay-fresh-2026-11-21_10-00-00")).unwrap();
+        let k = all_kept(&[t.path().to_path_buf()]);
+        assert_eq!(k.len(), 2);
+        let csgo = k.iter().find(|x| x.1 == "730").unwrap();
+        assert_eq!(csgo.2, 5000);
+        assert_eq!(human_size(3_200_000_000), "3.2 GB");
+        assert_eq!(human_size(5000), "1 MB");
+    }
 }

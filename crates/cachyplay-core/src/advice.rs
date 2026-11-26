@@ -617,6 +617,34 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
         }
     }
 
+    // 9b. The game drew on the weak graphics chip built into the processor or motherboard.
+    if let Some(l) = ev
+        .launches
+        .iter()
+        .rev()
+        .find(|l| l.gpu_integrated.is_some())
+    {
+        if l.gpu_integrated == Some(true) {
+            out.push(Suggestion {
+                id: "builtin_gpu".into(),
+                title: "This game ran on the built-in graphics chip".into(),
+                why: vec![format!(
+                    "The last time {} ran, it drew on {} instead of your graphics card. That's much slower and can cause stutter or crashes.",
+                    ev.game_name,
+                    l.gpu.as_deref().unwrap_or("the built-in chip")
+                )],
+                steps: vec![
+                    "Make sure \"Use the graphics card\" is on for this game in CachyPlay (it is unless you turned it off).".into(),
+                    "Look in the game's own graphics settings for a \"Display adapter\" or \"GPU\" option and pick your graphics card.".into(),
+                    "If your monitor is plugged into the motherboard, plug it into the graphics card.".into(),
+                ],
+                priority: 4,
+                confidence: Confidence::Likely,
+                ..Default::default()
+            });
+        }
+    }
+
     // 10. Settings that games running fine here use.
     if trouble_here {
         let mine: Vec<String> = crate::insights::env_settings(&ev.user_options)
@@ -1243,6 +1271,8 @@ pub struct Insights {
     pub share_urls: BTreeMap<String, String>,
     /// Earlier copies of the game's Windows files kept by "Reset".
     pub kept_prefixes: usize,
+    /// Space the kept copies use, e.g. "3.2 GB".
+    pub kept_size: Option<String>,
     pub has_prefix: bool,
 }
 
@@ -1282,6 +1312,14 @@ pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights
         anti_cheat: ev.anti_cheat.clone(),
         share_urls,
         kept_prefixes: crate::prefix::kept(game).len(),
+        kept_size: {
+            let k: u64 = crate::prefix::all_kept(std::slice::from_ref(&game.library))
+                .iter()
+                .filter(|x| x.1 == game.app_id)
+                .map(|x| x.2)
+                .sum();
+            (k > 0).then(|| crate::prefix::human_size(k))
+        },
         has_prefix: ctx.steam.compatdata(game).is_some(),
         summary,
         suggestions,
@@ -1484,6 +1522,7 @@ mod tests {
             skipped: vec![],
             prep_error: None,
             running: false,
+            ..Default::default()
         };
         // A launch that's still going says nothing yet, and nobody is asked.
         ev.launches = vec![LaunchRecord {
@@ -1505,6 +1544,25 @@ mod tests {
         ev.fixes.fixes[0].verdict = None;
         ev.launches.push(rec("2026-11-23T20:00:00-08:00", true));
         assert_eq!(suggest(&ev)[0].status, Status::DidntHelp);
+        // Ran on the built-in chip last time: say so near the top.
+        ev.launches.push(LaunchRecord {
+            gpu: Some("the built-in AMD graphics chip".into()),
+            gpu_integrated: Some(true),
+            ..rec("2026-11-23T21:00:00-08:00", false)
+        });
+        let s = suggest(&ev);
+        let b = s
+            .iter()
+            .find(|x| x.id == "builtin_gpu")
+            .expect("builtin_gpu suggestion");
+        assert!(b.why[0].contains("built-in AMD graphics chip"));
+        // On the card the next time: the suggestion goes away.
+        ev.launches.push(LaunchRecord {
+            gpu: Some("the NVIDIA graphics card".into()),
+            gpu_integrated: Some(false),
+            ..rec("2026-11-23T22:00:00-08:00", false)
+        });
+        assert!(suggest(&ev).iter().all(|x| x.id != "builtin_gpu"));
     }
 
     /// The Nov 24 report: Moon Sweepers worked on Nov 15, the game updated Nov 18, it has failed

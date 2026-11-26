@@ -7,6 +7,7 @@ pub mod diagnose;
 pub mod evidence;
 pub mod fixes;
 pub mod fsutil;
+pub mod gpus;
 pub mod history;
 pub mod housekeeping;
 pub mod insights;

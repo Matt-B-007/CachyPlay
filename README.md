@@ -34,13 +34,13 @@ Installer options: `--beta`, `--from-source`, `--no-launch`. The desktop app nee
 Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix, red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. After you play, CachyPlay asks "Did it work?", and your answer decides what it suggests next.
 
 - **Fixes** lists every suggestion, most likely first, each with Undo.
-- **Settings** (per game) shows exactly what CachyPlay changes, OBS game capture, the line to keep your settings without CachyPlay, and **Reset the game's Windows files**.
-- **History** lists crashes and starts, and has **Tell the developer**: a short report to post in the game's Steam discussions.
+- **Settings** (per game) shows exactly what CachyPlay changes, **Use the graphics card** (on PCs that also have a chip built into the processor or motherboard), OBS game capture, the line to keep your settings without CachyPlay, and **Reset the game's Windows files** (plus deleting the old copies once you don't need Undo).
+- **History** lists crashes (remembered for 30 days, across restarts) and starts (with the graphics chip each one used), and has **Tell the developer**: a short report to post in the game's Steam discussions.
 - When a game is broken, a card compares it with games that run fine on your PC.
 
-The gear icon opens Settings: updates, a **PC check** for common Linux gaming problems, light/dark theme (it can follow your KDE colors), big-screen mode for the TV with controller support, optional ProtonDB ratings, and uninstall. Problems the PC check finds also show as a banner.
+The gear icon opens Settings: updates, a **PC check** for common Linux gaming problems, light/dark theme (it follows your desktop, and is dark when the desktop doesn't say), big-screen mode for the TV with controller support, optional ProtonDB ratings, and uninstall. Problems the PC check finds also show as a banner.
 
-From a terminal: `cachyplay doctor` (PC check and self-test), `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo]`, `cachyplay report <appid>`.
+From a terminal: `cachyplay doctor` (PC check and self-test), `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo | --delete-kept]`, `cachyplay card <appid> on|off`, `cachyplay report <appid>`.
 
 Need help? See [SUPPORT.md](SUPPORT.md). Making a release? See [RELEASING.md](RELEASING.md).
 
@@ -88,10 +88,11 @@ From the terminal: `cachyplay suggest <appid>`, `cachyplay fix <appid> <id>`, `c
 CachyPlay checks GitHub for a newer version when it starts, and never interrupts you. When one exists, an **Update to v…** button appears at the top and in Settings → Updates. Click it to read what's new, then **Update now**. Two clicks, then restart CachyPlay.
 
 - **Stable or Beta:** pick a channel in Settings → Updates. Beta gets new features sooner. Beta builds follow the Beta channel until you choose; on Stable, CachyPlay tells you when a newer beta is out and offers **Switch to Beta and update**.
-- **Updates come from GitHub Releases.** A release appears when a version tag (like `v0.1.0-beta.7`) is pushed: the Release workflow builds it and attaches the download. Pushing code alone doesn't make an update.
+- **Beta and Stable together:** a beta ranks below the finished version with the same number (`0.1.0-beta.11` < `0.1.0` < `0.1.1-beta.1`). If you're on a beta that's newer than the newest Stable and switch to Stable, CachyPlay offers **Switch to Stable now**; otherwise you get Stable from its next release.
+- **Updates come from GitHub Releases.** GitHub publishes one by itself whenever the version number in the code goes up and all tests pass. A release whose build failed is never offered.
 - **Safe updates:** the download is checked against its SHA-256 checksum and test-run before anything is replaced. The previous version is kept, so **Go back to the previous version** in Settings undoes an update.
 - **AUR installs** are updated by pacman. The app shows the command (`paru -S cachyplay`, or `paru -S cachyplay-beta` for the beta channel).
-- From the terminal: `cachyplay update`, `cachyplay update --check`, `cachyplay channel beta`.
+- From the terminal: `cachyplay update`, `cachyplay update --check`, `cachyplay update --to-stable`, `cachyplay channel beta`.
 
 While the GitHub repository is private, updates only work if the GitHub CLI (`gh`) is installed and signed in.
 
@@ -130,13 +131,18 @@ rm -rf ~/.local/share/cachyplay ~/.local/state/cachyplay ~/.cache/cachyplay ~/.c
 
 ## Verify on a real system before release
 
-These behaviours can't be tested in CI and must be checked once on a real CachyOS + Steam setup:
+Things CI can't test. Confirmed on a real CachyOS + Steam PC so far:
 
-1. **Steam runs launch options through a shell.** Apply CachyPlay to a game, launch it, and confirm a record appears in `~/.local/state/cachyplay/launches/`.
-2. **Fail open with a missing binary.** Temporarily rename the installed binary, launch the game from Steam, and confirm it still starts. Then restore the name.
-3. **Bug reports name the game.** Start a game from Steam, then save a general bug report: its summary should name that game under "GPU crashes" if a GPU error happened. This relies on Steam's `logs/console_log.txt` containing "Game process added : AppID …" lines.
-4. **Turning off Vulkan add-ons reaches the game.** Apply "Turn off the extra Vulkan add-ons" to a game, start it with MangoHud or a frame-generation layer that's normally on, and confirm it's gone. This checks that `VK_LOADER_LAYERS_DISABLE` passes through Steam's runtime container.
-5. **Steam keeps the edit.** Apply with Steam closed, open Steam, and confirm the launch options in the game's Properties match.
+- **Steam runs launch options through a shell** (launch records appear in `~/.local/state/cachyplay/launches/`).
+- **Steam's `console_log.txt` names the game** ("Game process added : AppID …" lines), so bug reports and the Proton history know which game crashed.
+- **Fail open**: games start normally when CachyPlay is missing.
+
+Still to check once per release on a real PC:
+
+1. **Turning off Vulkan add-ons reaches the game.** Apply "Turn off the extra Vulkan add-ons" to a game, start it with MangoHud or a frame-generation layer that's normally on, and confirm it's gone. This checks that `VK_LOADER_LAYERS_DISABLE` passes through Steam's runtime container.
+2. **Use the graphics card** (PCs with a built-in chip too). Start a game, then check its History tab: the start should say "On NVIDIA graphics card" (or AMD). This checks that the settings pass through Steam's runtime and that CachyPlay can see which chip the game opened.
+3. **Steam keeps the edit.** Apply with Steam closed, open Steam, and confirm the launch options in the game's Properties match.
+4. **Update and Switch to Stable now** work from the app with the new release.
 
 ## Build from source
 
@@ -152,7 +158,7 @@ cargo build --workspace --release             # target/release/cachyplay and cac
 | `crates/cachyplay` | Command-line tool and the launch wrapper Steam calls |
 | `crates/cachyplay-gui` | Desktop app (Tauri 2, plain HTML/CSS/JS in `ui/`) |
 
-**Releasing:** set `version` in `Cargo.toml` to exactly match the tag (tag `v0.1.0-beta.3` needs `version = "0.1.0-beta.3"`), then push the tag. The Release workflow refuses mismatches, because the app compares its own version with GitHub's releases.
+**Releasing:** bump `version` in `Cargo.toml` and push to `main`. GitHub runs the tests and, if they pass, tags and publishes the release by itself. See [RELEASING.md](RELEASING.md).
 
 The desktop app is a separate program on purpose: the launch wrapper runs before every game, so it stays small and starts instantly without loading WebKit.
 

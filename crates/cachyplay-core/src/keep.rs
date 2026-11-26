@@ -91,6 +91,20 @@ pub fn settings_for(ctx: &Ctx, game: &Game, facts: &Facts) -> Vec<Setting> {
             });
         }
     }
+    // Two graphics chips: the settings that keep the game on the graphics card.
+    if crate::gpus::prefer_card_for(&ctx.paths, &game.app_id) {
+        let gpus = crate::gpus::list(&crate::pccheck::Root::system());
+        for (k, v) in crate::gpus::prefer_card_env(&gpus) {
+            if !env.iter().any(|(name, ..)| *name == k) {
+                env.push((
+                    k,
+                    v,
+                    "Makes the game use the graphics card, not the built-in chip".into(),
+                    "your setting".into(),
+                ));
+            }
+        }
+    }
     let obs =
         (crate::obs::enabled_for(&ctx.paths, &game.app_id) && crate::obs::installed()).then(|| {
             Setting {

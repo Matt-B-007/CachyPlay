@@ -32,6 +32,13 @@ pub struct LaunchRecord {
     /// game (or CachyPlay with it) was killed, e.g. after a GPU hang, without closing normally.
     #[serde(default)]
     pub running: bool,
+    /// The graphics chip the game drew on, e.g. "the NVIDIA graphics card". Only checked on PCs
+    /// with two chips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
+    /// True if that was the weaker chip built into the processor or motherboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_integrated: Option<bool>,
 }
 
 /// A launch still marked running after this long didn't close normally.
@@ -83,6 +90,23 @@ fn prepare(paths: &Paths, app_id: Option<&str>) -> anyhow::Result<Plan> {
         }
         plan.extra_args.extend(fix.args.iter().cloned());
         plan.applied.push(format!("Fix: {}", fix.label));
+    }
+    // Two graphics chips: make sure the game draws on the card, not the built-in chip. Settings
+    // you set yourself (in launch options or a fix) win.
+    if crate::gpus::prefer_card_for(paths, app_id) {
+        let gpus = crate::gpus::list(&crate::pccheck::Root::system());
+        let env = crate::gpus::prefer_card_env(&gpus);
+        let mut added = false;
+        for (k, v) in env {
+            if std::env::var_os(&k).is_some() || plan.env.iter().any(|(n, _, _)| *n == k) {
+                continue;
+            }
+            plan.env.push((k, v, "Use the graphics card".into()));
+            added = true;
+        }
+        if added {
+            plan.applied.push("Use the graphics card".into());
+        }
     }
     if crate::obs::enabled_for(paths, app_id) {
         if std::env::var("OBS_VKCAPTURE").is_ok_and(|v| v == "1") {
@@ -155,8 +179,9 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
     }
 
     let start = Instant::now();
-    let status = match build(&command, &plan, passthrough).status() {
-        Ok(s) => Ok(s),
+    let chip: std::sync::Arc<std::sync::Mutex<Option<crate::gpus::Gpu>>> = Default::default();
+    let child = match build(&command, &plan, passthrough).spawn() {
+        Ok(c) => Ok(c),
         Err(e) if !passthrough => {
             log(
                 paths,
@@ -165,10 +190,14 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
                 ),
             );
             passthrough = true;
-            build(&command, &plan, true).status()
+            build(&command, &plan, true).spawn()
         }
         Err(e) => Err(e),
     };
+    if let (Ok(c), Some(_)) = (&child, &app_id) {
+        watch_chip(c.id(), chip.clone());
+    }
+    let status = child.and_then(|mut c| c.wait());
     let runtime = start.elapsed().as_secs_f64();
 
     let (code, signal) = match &status {
@@ -207,6 +236,14 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
                 skipped: plan.skipped.clone(),
                 prep_error: prep_error.clone(),
                 running: false,
+                gpu: chip
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|g| g.describe())),
+                gpu_integrated: chip
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|g| g.integrated)),
             };
             if let Some(path) = &record_path {
                 let _ = write_json(path, &rec);
@@ -227,6 +264,34 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
         (None, Some(s)) => 128 + s,
         _ => 1,
     }
+}
+
+/// On a PC with two graphics chips, look (in the background) at which one the game opened.
+/// Checked after 20 seconds, then every 40 seconds for a few minutes, since games open the chip
+/// only once their window appears. Never affects the game.
+fn watch_chip(pid: u32, out: std::sync::Arc<std::sync::Mutex<Option<crate::gpus::Gpu>>>) {
+    let _ = std::thread::Builder::new()
+        .name("chip".into())
+        .spawn(move || {
+            let root = crate::pccheck::Root::system();
+            let gpus = crate::gpus::list(&root);
+            if !crate::gpus::has_both(&gpus) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            for _ in 0..8 {
+                if let Some(g) = crate::gpus::chip_in_use(&root, pid, &gpus) {
+                    let card = !g.integrated;
+                    if let Ok(mut slot) = out.lock() {
+                        *slot = Some(g);
+                    }
+                    if card {
+                        return;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(40));
+            }
+        });
 }
 
 /// Desktop notification so a failed launch doesn't go unnoticed. Best-effort and non-blocking.

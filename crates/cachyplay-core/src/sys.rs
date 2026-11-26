@@ -88,3 +88,72 @@ pub fn capture(program: &str, args: &[&str], timeout: Duration) -> Option<String
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     Some(s)
 }
+
+/// Whether the desktop uses a dark or light theme: "dark", "light", or None if it doesn't say.
+/// Reads KDE's colors first (the window background's brightness, then the scheme's name), then
+/// GNOME's color-scheme setting.
+pub fn desktop_theme(home: &std::path::Path) -> Option<&'static str> {
+    if let Ok(text) = std::fs::read_to_string(home.join(".config/kdeglobals")) {
+        if let Some(t) = kde_theme(&text) {
+            return Some(t);
+        }
+    }
+    let out = capture(
+        "gsettings",
+        &["get", "org.gnome.desktop.interface", "color-scheme"],
+        std::time::Duration::from_secs(2),
+    )?;
+    match out.trim().trim_matches('\'') {
+        "prefer-dark" => Some("dark"),
+        "prefer-light" => Some("light"),
+        _ => None,
+    }
+}
+
+pub fn kde_theme(kdeglobals: &str) -> Option<&'static str> {
+    let mut section = "";
+    for line in kdeglobals.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line;
+            continue;
+        }
+        if section == "[Colors:Window]" {
+            if let Some(v) = line.strip_prefix("BackgroundNormal=") {
+                let rgb: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if rgb.len() >= 3 {
+                    let lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+                    return Some(if lum < 128.0 { "dark" } else { "light" });
+                }
+            }
+        }
+    }
+    let scheme = kdeglobals
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("ColorScheme="))?
+        .to_lowercase();
+    Some(if scheme.contains("dark") {
+        "dark"
+    } else {
+        "light"
+    })
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::kde_theme;
+
+    #[test]
+    fn reads_kde_theme() {
+        assert_eq!(
+            kde_theme("[Colors:Window]\nBackgroundNormal=32,35,38\n"),
+            Some("dark")
+        );
+        assert_eq!(kde_theme("[Colors:View]\nBackgroundNormal=255,255,255\n[Colors:Window]\nBackgroundNormal=239,240,241\n"), Some("light"));
+        assert_eq!(
+            kde_theme("[General]\nColorScheme=BreezeDark\n"),
+            Some("dark")
+        );
+        assert_eq!(kde_theme("[General]\nAccentColor=61,174,233\n"), None);
+    }
+}

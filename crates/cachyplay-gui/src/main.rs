@@ -106,6 +106,18 @@ fn set_obs_capture(app_id: String, on: bool) -> CmdResult<String> {
     Ok(msg)
 }
 
+/// "Use the graphics card" for one game (PCs with two graphics chips).
+#[tauri::command]
+fn set_prefer_card(app_id: String, on: bool) -> CmdResult<String> {
+    let p = paths()?;
+    cachyplay_core::gpus::set_prefer_card(&p, &app_id, on).map_err(|e| format!("{e:#}"))?;
+    Ok(if on {
+        "The game will use the graphics card the next time it starts.".into()
+    } else {
+        "The game picks its graphics chip by itself from now on.".into()
+    })
+}
+
 #[tauri::command]
 fn set_obs_all(on: bool) -> CmdResult<String> {
     let p = paths()?;
@@ -251,7 +263,7 @@ fn restore_everything(p: &Paths) -> CmdResult<Vec<String>> {
 /// Restore every managed game; with `keep`, games with settings get them written into Steam.
 fn restore_everything_with(p: &Paths, keep: bool) -> CmdResult<Vec<String>> {
     let accounts = touched_accounts(p);
-    if accounts.is_empty() {
+    if accounts.is_empty() && !has_compat_switches(p) {
         return Ok(vec![]); // nothing was ever changed; Steam isn't needed
     }
     let mut base = Ctx::for_restore(p.clone()).map_err(|e| format!("{e:#}"))?;
@@ -290,7 +302,12 @@ fn restore_everything_with(p: &Paths, keep: bool) -> CmdResult<Vec<String>> {
             }
         }
     }
+    lines.extend(cachyplay_core::compat::revert_all(&base, keep));
     Ok(lines)
+}
+
+fn has_compat_switches(p: &Paths) -> bool {
+    std::fs::read_dir(p.data.join("compat-tool")).is_ok_and(|mut d| d.next().is_some())
 }
 
 #[tauri::command]
@@ -328,6 +345,9 @@ fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
             }
         }
     }
+    let kept_note = Ctx::for_restore(p.clone())
+        .ok()
+        .and_then(|c| cachyplay_core::compat::kept_copies_note(&c));
     let restored = restore_everything_with(&p, keep_settings)?;
     install::remove_user_files(&p, remove_backups).map_err(|e| format!("{e:#}"))?;
     let exe = std::env::current_exe().unwrap_or_default();
@@ -335,7 +355,14 @@ fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
         .iter()
         .filter(|l| l.ends_with("settings kept in Steam"))
         .count();
-    let back = restored.len() - kept;
+    let back = restored
+        .iter()
+        .filter(|l| l.ends_with(": restored") || l.ends_with("(your edits kept)"))
+        .count();
+    let tools: Vec<&String> = restored
+        .iter()
+        .filter(|l| l.contains("compatibility tool") || l.contains(": kept on "))
+        .collect();
     let count = |n: usize| {
         if n == 1 {
             "1 game".to_string()
@@ -354,6 +381,12 @@ fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
         ),
     };
     let mut msg = format!("{games}, and removed CachyPlay's files.");
+    for t in tools {
+        msg.push_str(&format!(" {t}."));
+    }
+    if let Some(n) = kept_note {
+        msg.push_str(&format!(" {n}"));
+    }
     if let Some(f) = saved {
         msg.push_str(&format!(
             " A copy of your game settings is at {}.",
@@ -522,6 +555,19 @@ fn undo_prefix_reset(app_id: String) -> CmdResult<String> {
 }
 
 #[tauri::command]
+fn delete_kept_prefixes(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = game_of(&c, &app_id)?;
+    let freed = cachyplay_core::prefix::delete_kept(&c, &g).map_err(|e| format!("{e:#}"))?;
+    Ok(format!(
+        "Deleted the old copies of {}'s Windows files and freed {}.",
+        g.name,
+        cachyplay_core::prefix::human_size(freed)
+    ))
+}
+
+#[tauri::command]
 async fn protondb_rating(app_id: String) -> CmdResult<Option<serde_json::Value>> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = paths()?;
@@ -574,6 +620,13 @@ fn desktop_accent() -> Option<String> {
     (rgb.len() == 3).then(|| format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
 }
 
+/// "dark" or "light" from the desktop's own settings, or None if it doesn't say.
+#[tauri::command]
+fn desktop_theme() -> Option<String> {
+    let p = paths().ok()?;
+    cachyplay_core::sys::desktop_theme(&p.home).map(str::to_string)
+}
+
 #[tauri::command]
 fn open_url(url: String) -> CmdResult<()> {
     if !(url.starts_with("https://") || url.starts_with("steam://")) {
@@ -611,17 +664,23 @@ fn set_channel(channel: update::Channel) -> CmdResult<()> {
 }
 
 #[tauri::command]
-async fn install_update() -> CmdResult<String> {
-    tauri::async_runtime::spawn_blocking(|| {
+async fn install_update(to_stable: Option<bool>) -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let p = paths()?;
         let status = update::check(&p);
         if let Some(e) = status.error {
             return Err(e);
         }
-        let release = status
-            .latest
-            .filter(|_| status.available)
-            .ok_or("You already have the newest version.")?;
+        let release = if to_stable.unwrap_or(false) {
+            status
+                .stable_now
+                .ok_or("There's no older Stable version to switch to.")?
+        } else {
+            status
+                .latest
+                .filter(|_| status.available)
+                .ok_or("You already have the newest version.")?
+        };
         update::install(&p, &release).map_err(|e| format!("{e:#}"))
     })
     .await
@@ -684,6 +743,7 @@ fn main() {
             game_detail,
             cover,
             set_enabled,
+            set_prefer_card,
             switch_compat_tool,
             undo_compat_tool,
             set_obs_capture,
@@ -709,10 +769,12 @@ fn main() {
             self_test,
             reset_prefix,
             undo_prefix_reset,
+            delete_kept_prefixes,
             protondb_rating,
             app_settings,
             set_app_setting,
             desktop_accent,
+            desktop_theme,
             open_url,
             apply_fix,
             undo_fix,

@@ -163,6 +163,68 @@ pub fn undo(ctx: &Ctx, app_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Every game whose compatibility tool CachyPlay switched: (AppID, tool it switched to).
+pub fn all_switched(ctx: &Ctx) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = fs::read_dir(ctx.paths.data.join("compat-tool"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let id = e.path().file_stem()?.to_string_lossy().into_owned();
+            let rec: UndoRecord = read_json(&e.path())?;
+            Some((id, rec.set))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// For restore-all and uninstall. Without `keep`, puts every switched game back on the tool it
+/// used before. With `keep` (the player keeps working settings), leaves the switch in Steam and
+/// forgets the undo record, so it becomes the player's own setting. Returns one line per game.
+pub fn revert_all(ctx: &Ctx, keep: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (id, set) in all_switched(ctx) {
+        let name = ctx
+            .steam
+            .find_game(&id)
+            .map(|g| g.name)
+            .unwrap_or_else(|| id.clone());
+        if keep {
+            let _ = fs::remove_file(undo_path(ctx, &id));
+            lines.push(format!(
+                "{name}: kept on {} (Properties → Compatibility in Steam)",
+                friendly(&set)
+            ));
+            continue;
+        }
+        let before = read_json::<UndoRecord>(&undo_path(ctx, &id)).and_then(|r| r.previous);
+        match undo(ctx, &id) {
+            Ok(()) => lines.push(format!(
+                "{name}: compatibility tool back to {}",
+                before.as_deref().map(friendly).unwrap_or_else(|| "Steam's default".into())
+            )),
+            Err(e) => lines.push(format!("{name}: couldn't put the compatibility tool back ({e:#}); change it in Steam → Properties → Compatibility")),
+        }
+    }
+    lines
+}
+
+/// Where earlier Windows-file resets left copies, for the uninstall message.
+pub fn kept_copies_note(ctx: &Ctx) -> Option<String> {
+    let kept = crate::prefix::all_kept(&ctx.steam.library_folders());
+    if kept.is_empty() {
+        return None;
+    }
+    let total: u64 = kept.iter().map(|k| k.2).sum();
+    let dirs: Vec<String> = kept.iter().map(|k| k.0.display().to_string()).collect();
+    Some(format!(
+        "Old copies of games' Windows files from resets are still there ({}). Delete these folders if the games run fine: {}",
+        crate::prefix::human_size(total),
+        dirs.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +279,40 @@ mod tests {
         undo(&ctx, "1240440").unwrap();
         assert_eq!(ctx.steam.compat_tool("1240440"), before);
         assert!(switched_to(&ctx, "1240440").is_none());
+
+        // Restore-all puts it back...
+        switch(&ctx, "1240440", ge).unwrap();
+        assert_eq!(all_switched(&ctx).len(), 1);
+        let lines = revert_all(&ctx, false);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("back to"), "{lines:?}");
+        assert_eq!(ctx.steam.compat_tool("1240440"), before);
+        assert!(all_switched(&ctx).is_empty());
+        // ...and "keep my settings" leaves it in Steam as the player's own setting.
+        switch(&ctx, "1240440", ge).unwrap();
+        let lines = revert_all(&ctx, true);
+        assert!(lines[0].contains("kept on GE-Proton11-12"), "{lines:?}");
+        assert_eq!(
+            ctx.steam.compat_tool("1240440").as_deref(),
+            Some("GE-Proton11-12")
+        );
+        assert!(all_switched(&ctx).is_empty());
+    }
+
+    #[test]
+    fn mentions_kept_copies_on_uninstall() {
+        let f = FakeSteam::new();
+        let ctx = f.ctx();
+        assert!(kept_copies_note(&ctx).is_none());
+        let lib = ctx.steam.library_folders()[0].clone();
+        let kept = lib.join("steamapps/compatdata/1240440.cachyplay-kept-2026-11-20_10-00-00");
+        fs::create_dir_all(&kept).unwrap();
+        fs::write(kept.join("user.reg"), "x").unwrap();
+        let note = kept_copies_note(&ctx).unwrap();
+        assert!(
+            note.contains("1240440.cachyplay-kept-2026-11-20_10-00-00"),
+            "{note}"
+        );
     }
 
     #[test]

@@ -69,6 +69,14 @@ enum Cmd {
         /// on or off
         state: Option<String>,
     },
+    /// On PCs with a graphics card and a built-in chip: make a game use the card (on, the
+    /// default) or let it pick (off). `cachyplay card 1240440 off`, or no state to show the chips
+    Card {
+        /// A game's AppID
+        app_id: Option<String>,
+        /// on or off
+        state: Option<String>,
+    },
     /// Show or change a game's compatibility tool (Proton version), like Steam's
     /// Properties → Compatibility. `cachyplay proton 5335510` lists them,
     /// `cachyplay proton 5335510 GE-Proton11-12` switches, `… undo` puts it back. Steam must be closed
@@ -81,9 +89,13 @@ enum Cmd {
     Doctor,
     /// Set a game's Windows files (Proton prefix) aside so Steam makes fresh ones; --undo puts them back
     ResetPrefix {
+        /// A game's AppID, or `all` with --delete-kept
         app_id: String,
         #[arg(long)]
         undo: bool,
+        /// Delete the old copies earlier resets set aside (Undo is no longer possible)
+        #[arg(long, conflicts_with = "undo")]
+        delete_kept: bool,
     },
     /// Answer "Did it work?" for a fix: `cachyplay worked <appid> <fix-id> yes|no`
     Worked {
@@ -113,6 +125,9 @@ enum Cmd {
         /// Go back to the version installed before the last update
         #[arg(long, conflicts_with = "check")]
         roll_back: bool,
+        /// On a beta newer than the newest stable: install that stable version now
+        #[arg(long, conflicts_with_all = ["check", "roll_back"])]
+        to_stable: bool,
     },
     /// Show or change the update channel: stable or beta
     Channel { channel: Option<String> },
@@ -445,8 +460,33 @@ fn real_main() -> Result<ExitCode> {
             }
         }
         Cmd::Doctor => doctor(&paths)?,
-        Cmd::ResetPrefix { app_id, undo } => {
+        Cmd::ResetPrefix {
+            app_id,
+            undo,
+            delete_kept,
+        } => {
             let c = ctx(&paths)?;
+            if delete_kept {
+                let ids: Vec<String> = if app_id == "all" {
+                    let mut v: Vec<String> =
+                        cachyplay_core::prefix::all_kept(&c.steam.library_folders())
+                            .into_iter()
+                            .map(|k| k.1)
+                            .collect();
+                    v.dedup();
+                    v
+                } else {
+                    vec![app_id.clone()]
+                };
+                let mut freed = 0;
+                for id in ids {
+                    if let Some(g) = c.steam.find_game(&id) {
+                        freed += cachyplay_core::prefix::delete_kept(&c, &g)?;
+                    }
+                }
+                println!("Freed {}.", cachyplay_core::prefix::human_size(freed));
+                return Ok(ExitCode::SUCCESS);
+            }
             let g = c
                 .steam
                 .find_game(&app_id)
@@ -497,6 +537,14 @@ fn real_main() -> Result<ExitCode> {
             } else {
                 println!("  1. Restore the launch options of every game CachyPlay changed (your own options are kept)");
             }
+            println!(
+                "     and put back any compatibility tool (Proton version) CachyPlay switched{}",
+                if keep_settings {
+                    " (kept with --keep-settings)"
+                } else {
+                    ""
+                }
+            );
             println!("  2. Remove CachyPlay's cache, logs, fix files and records");
             println!(
                 "  3. {} save and config backups",
@@ -517,8 +565,14 @@ fn real_main() -> Result<ExitCode> {
                     }
                 }
             }
+            let kept_note = Ctx::for_restore(paths.clone())
+                .ok()
+                .and_then(|c| cachyplay_core::compat::kept_copies_note(&c));
             restore_all_with(&paths, false, keep_settings)?;
             let removed = install::remove_user_files(&paths, remove_backups)?;
+            if let Some(n) = kept_note {
+                println!("{n}");
+            }
             for r in removed {
                 println!("Removed {}", r.display());
             }
@@ -529,7 +583,11 @@ fn real_main() -> Result<ExitCode> {
                 println!("\nCachyPlay has been removed.");
             }
         }
-        Cmd::Update { check, roll_back } => {
+        Cmd::Update {
+            check,
+            roll_back,
+            to_stable,
+        } => {
             if roll_back {
                 println!("{}", update::roll_back(&paths)?);
                 return Ok(ExitCode::SUCCESS);
@@ -561,6 +619,16 @@ fn real_main() -> Result<ExitCode> {
                 ),
                 _ => {
                     println!("You have the newest {:?} version.", st.channel);
+                    if let Some(st_rel) = &st.stable_now {
+                        if to_stable && st.kind == update::InstallKind::User {
+                            println!("{}", update::install(&paths, st_rel)?);
+                            return Ok(ExitCode::SUCCESS);
+                        }
+                        println!(
+                            "You're on a beta newer than the newest stable ({}). You'll get stable updates from the next one on, or switch now with:  cachyplay update --to-stable",
+                            st_rel.tag
+                        );
+                    }
                     if let Some(b) = &st.newer_beta {
                         println!(
                             "A newer beta is out: {}. Get it with:  cachyplay channel beta && cachyplay update",
@@ -568,6 +636,41 @@ fn real_main() -> Result<ExitCode> {
                         );
                     }
                 }
+            }
+        }
+        Cmd::Card { app_id, state } => {
+            use cachyplay_core::gpus;
+            let list = gpus::list(&cachyplay_core::pccheck::Root::system());
+            for g in &list {
+                println!(
+                    "{} ({}){}",
+                    g.describe(),
+                    g.pci,
+                    if g.displays.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", monitor on {}", g.displays.join(", "))
+                    }
+                );
+            }
+            if !gpus::has_both(&list) {
+                println!("Only one kind of graphics chip here, so there's nothing to choose.");
+            }
+            match (app_id, state.as_deref()) {
+                (Some(id), Some(s @ ("on" | "off"))) => {
+                    gpus::set_prefer_card(&paths, &id, s == "on")?;
+                    println!("Use the graphics card for {id}: {s}");
+                }
+                (Some(id), None) => println!(
+                    "Use the graphics card for {id}: {}",
+                    if gpus::prefer_card_for(&paths, &id) {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                ),
+                (Some(_), Some(other)) => bail!("use `on` or `off`, not {other:?}"),
+                (None, _) => {}
             }
         }
         Cmd::Obs { target, state } => {
@@ -671,7 +774,9 @@ fn restore_all(paths: &Paths, dry_run: bool) -> Result<usize> {
 /// Restore every managed game; with `keep`, games with settings get them written into Steam instead.
 fn restore_all_with(paths: &Paths, dry_run: bool, keep_settings: bool) -> Result<usize> {
     let accounts = touched_accounts(paths);
-    if accounts.is_empty() {
+    let switches =
+        std::fs::read_dir(paths.data.join("compat-tool")).is_ok_and(|mut d| d.next().is_some());
+    if accounts.is_empty() && !switches {
         return Ok(0); // nothing was ever changed; Steam isn't needed
     }
     let mut base = Ctx::for_restore(paths.clone())?;
@@ -706,6 +811,15 @@ fn restore_all_with(paths: &Paths, dry_run: bool, keep_settings: bool) -> Result
             } else {
                 println!("{app} (account {account}): {}", describe(c.undo(&app)?));
             }
+        }
+    }
+    if dry_run {
+        for (id, set) in cachyplay_core::compat::all_switched(&base) {
+            println!("would put {id}'s compatibility tool back (CachyPlay set it to {set})");
+        }
+    } else {
+        for line in cachyplay_core::compat::revert_all(&base, keep_settings) {
+            println!("{line}");
         }
     }
     Ok(count)

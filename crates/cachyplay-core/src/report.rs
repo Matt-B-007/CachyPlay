@@ -100,6 +100,7 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
     let (journal_now, journal_prev) = (logs.this_boot.clone(), logs.previous_boot.clone());
 
     // A general report names the game that crashed most recently, if we can tell.
+    let general = game.is_none();
     let auto_game: Option<Game> = match (game, ctx) {
         (None, Some(c)) => events
             .iter()
@@ -250,7 +251,10 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
 
     s.push_str("\n## GPU crashes (newest first)\n\n");
     if events.is_empty() {
-        s.push_str("No GPU driver errors in the kernel log for this boot or the previous one.\n");
+        s.push_str(&format!(
+            "No graphics driver crashes in the last {} days (CachyPlay remembers them across restarts).\n",
+            crate::evidence::CRASH_HISTORY_DAYS
+        ));
     }
     for e in events.iter().take(10) {
         let who = match &e.app_id {
@@ -321,13 +325,11 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
         s.push_str("\nNo Proton log found. For a fuller report: add `PROTON_LOG=1` at the start of the game's launch options in Steam, reproduce the problem once, then save a new report.\n");
     }
 
-    s.push_str("\n## Matched patterns in the game's logs\n\n");
-    if findings.is_empty() {
-        s.push_str(if game.is_some() {
-            "None of the known patterns matched.\n"
-        } else {
-            "(No game logs in a general report.)\n"
-        });
+    if game.is_some() {
+        s.push_str("\n## Matched patterns in the game's logs\n\n");
+        if findings.is_empty() {
+            s.push_str("None of the known patterns matched.\n");
+        }
     }
     for f in &findings {
         let bucket = match f.bucket {
@@ -341,6 +343,22 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
         for l in &f.lines {
             s.push_str(&format!("  - `{l}`\n"));
         }
+    }
+    let hints = hardware_hints(
+        &[journal_prev.as_deref(), journal_now.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    if !hints.is_empty() {
+        s.push_str("\n## Hardware hints\n\n");
+        for h in &hints {
+            s.push_str(&format!("- {h}\n"));
+        }
+    }
+    if general {
+        s.push_str(&general_sections(paths, ctx));
     }
     files.push(("00-summary.md".into(), s));
 
@@ -471,37 +489,7 @@ fn system_info() -> serde_json::Value {
             .and_then(|r| r.split_once(':'))
             .map(|(_, v)| v.trim().to_string())
     });
-    let pkgs = capture(
-        "pacman",
-        &[
-            "-Q",
-            "linux-cachyos",
-            "mesa",
-            "lib32-mesa",
-            "vulkan-radeon",
-            "nvidia-utils",
-            "lib32-nvidia-utils",
-            "nvidia-open-dkms",
-            "linux-cachyos-nvidia-open",
-            "proton-cachyos",
-            "proton-cachyos-slr",
-            "umu-launcher",
-            "cachyos-settings",
-            "steam",
-        ],
-        TOOL_TIMEOUT,
-    )
-    .map(|t| {
-        let mut v: Vec<String> = t
-            .lines()
-            .filter(|l| !l.starts_with("error:") && !l.trim().is_empty())
-            .map(str::to_string)
-            .collect();
-        v.dedup();
-        let mut seen = std::collections::BTreeSet::new();
-        v.retain(|l| seen.insert(l.clone()));
-        v
-    });
+    let pkgs = capture("pacman", &["-Q"], TOOL_TIMEOUT).map(|t| gaming_packages(&t));
     json!({
         "os": os,
         "kernel": read("/proc/sys/kernel/osrelease"),
@@ -557,6 +545,143 @@ pub fn vulkan_layers(summary: &str) -> Vec<String> {
 }
 
 /// The last few pacman upgrades of graphics drivers and kernels, with dates.
+/// The extra sections of a general report: games and their state, the PC check, CachyPlay's
+/// self-test, and recent driver updates as a timeline.
+fn general_sections(paths: &Paths, ctx: Option<&Ctx>) -> String {
+    use crate::pccheck::Level;
+    let mut s = String::new();
+    if let Some(c) = ctx {
+        let o = crate::library::overview(paths, Ok(c));
+        let light = |l: crate::advice::Light| match l {
+            crate::advice::Light::Red => "Not working",
+            crate::advice::Light::Yellow => "Works with (or trying) a fix",
+            crate::advice::Light::Green => "Runs fine",
+            crate::advice::Light::Grey => "Not played lately",
+        };
+        let mut games: Vec<_> = o
+            .games
+            .iter()
+            .filter(|g| g.light != crate::advice::Light::Grey || g.enabled)
+            .collect();
+        games.sort_by_key(|g| match g.light {
+            crate::advice::Light::Red => 0,
+            crate::advice::Light::Yellow => 1,
+            crate::advice::Light::Green => 2,
+            crate::advice::Light::Grey => 3,
+        });
+        s.push_str("\n## Games\n\n");
+        if games.is_empty() {
+            s.push_str("No games played lately, and CachyPlay isn't on for any game.\n");
+        }
+        for g in games {
+            s.push_str(&format!(
+                "- **{}** (AppID {}): {}{}\n",
+                g.name,
+                g.app_id,
+                light(g.light),
+                if g.enabled { "; CachyPlay is on" } else { "" }
+            ));
+        }
+    }
+    let libraries = ctx.map(|c| c.steam.library_folders()).unwrap_or_default();
+    let checks = crate::pccheck::pc_checks(&crate::pccheck::Root::system(), &libraries);
+    let shown: Vec<_> = checks.iter().filter(|c| c.level != Level::Ok).collect();
+    s.push_str("\n## PC check\n\n");
+    if shown.is_empty() {
+        s.push_str(&format!("All {} checks passed.\n", checks.len()));
+    }
+    for c in &shown {
+        let tag = match c.level {
+            Level::Bad => "Problem",
+            Level::Warn => "Worth fixing",
+            _ => "Note",
+        };
+        s.push_str(&format!("- {tag}: **{}**. {}\n", c.title, c.detail));
+        if let Some(cmd) = &c.command {
+            s.push_str(&format!("  Command: `{cmd}`\n"));
+        }
+    }
+    let selftest = crate::pccheck::self_test(paths);
+    let failing: Vec<_> = selftest.iter().filter(|c| c.level != Level::Ok).collect();
+    s.push_str("\n## CachyPlay self-test\n\n");
+    if failing.is_empty() {
+        s.push_str("CachyPlay is installed and set up correctly.\n");
+    }
+    for c in failing {
+        s.push_str(&format!("- **{}**: {}\n", c.title, c.detail));
+    }
+    let updates = crate::evidence::read_driver_updates();
+    if !updates.is_empty() {
+        s.push_str("\n## Recent driver and kernel updates\n\n");
+        for u in updates.iter().rev().take(12) {
+            s.push_str(&format!(
+                "- {}: {} {} → {}\n",
+                u.at.format("%b %-d %H:%M"),
+                u.package,
+                u.from,
+                u.to
+            ));
+        }
+    }
+    s
+}
+
+/// Packages that matter for games, from `pacman -Q` output: every graphics driver package (the
+/// same list as driver updates), plus Proton, Steam and the usual gaming tools.
+pub fn gaming_packages(pacman_q: &str) -> Vec<String> {
+    const TOOLS: &[&str] = &[
+        "steam",
+        "umu-launcher",
+        "cachyos-settings",
+        "gamemode",
+        "lib32-gamemode",
+        "mangohud",
+        "lib32-mangohud",
+        "gamescope",
+        "obs-vkcapture",
+        "lib32-obs-vkcapture",
+        "vulkan-icd-loader",
+        "lib32-vulkan-icd-loader",
+    ];
+    pacman_q
+        .lines()
+        .filter(|l| {
+            let pkg = l.split_whitespace().next().unwrap_or("");
+            crate::evidence::is_graphics_package(pkg)
+                || pkg.starts_with("proton")
+                || pkg.starts_with("vulkan-mesa")
+                || pkg.starts_with("lib32-vulkan-mesa")
+                || TOOLS.contains(&pkg)
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// Hardware problems the kernel log shows at every start, in plain words.
+pub fn hardware_hints(kernel_log: &str) -> Vec<String> {
+    let mut ports: Vec<String> = Vec::new();
+    for l in kernel_log.lines() {
+        if l.contains("unable to enumerate USB device")
+            || l.contains("device not accepting address")
+        {
+            // "usb usb8-port6: unable to enumerate" or "usb 8-6: device not accepting address"
+            let port = l
+                .split("usb ")
+                .nth(1)
+                .and_then(|r| r.split(':').next())
+                .map(|p| p.trim_start_matches("usb").replace("-port", "-"))
+                .unwrap_or_default();
+            if !port.is_empty() && !ports.contains(&port) {
+                ports.push(port);
+            }
+        }
+    }
+    ports
+        .into_iter()
+        .map(|p| format!("A USB device on port {p} doesn't start (\"device not accepting address\"). If a controller, headset or receiver isn't working, plug it into a different USB port. If everything works, you can ignore this."))
+        .collect()
+}
+
 fn recent_driver_updates() -> Vec<String> {
     let Ok(log) = fs::read_to_string("/var/log/pacman.log") else {
         return vec![];
@@ -663,11 +788,29 @@ pub fn redact_patterns(text: &str) -> String {
             (Regex::new(&format!(r"\b(?:{octet}\.){{3}}{octet}\b")).unwrap(), "<ip>"),
         ]
     });
+    // Identifiers that sit next to a label: keep the label, hide the value.
+    static LABELED: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    let labeled = LABELED.get_or_init(|| {
+        vec![
+            // A graphics card's unique ID (Vulkan's deviceUUID; NVIDIA's is per-card).
+            (Regex::new(r"(deviceUUID\s*=\s*)[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}").unwrap(), "${1}<id>"),
+            // Steam multiplayer lobbies you joined.
+            (Regex::new(r"(\+connect_lobby\s+)\d+").unwrap(), "${1}<lobby>"),
+        ]
+    });
     let mut out = text.to_string();
+    for (re, to) in labeled {
+        out = re.replace_all(&out, *to).into_owned();
+    }
     for (re, to) in pats {
+        let snapshot = out.clone();
         out = re
-            .replace_all(&out, |c: &regex::Captures| {
-                let m = &c[0];
+            .replace_all(&snapshot, |c: &regex::Captures| {
+                let whole = c.get(0).unwrap();
+                let m = whole.as_str();
+                if *to == "<ip>" && looks_like_version(&snapshot, whole.start(), whole.end()) {
+                    return m.to_string();
+                }
                 // Keep obviously harmless addresses that help debugging.
                 if *to == "<ip>" && (m == "0.0.0.0" || m.starts_with("127.")) {
                     m.to_string()
@@ -678,6 +821,21 @@ pub fn redact_patterns(text: &str) -> String {
             .into_owned();
     }
     out
+}
+
+/// Four dotted numbers that are a version, not a network address: a package version followed by
+/// its release number ("steam 1.0.0.85-3"), or a value on a "…Version" line ("conformanceVersion
+/// = 1.4.3.0").
+fn looks_like_version(text: &str, start: usize, end: usize) -> bool {
+    let after = &text[end..];
+    let mut a = after.chars();
+    if a.next() == Some('-') && a.next().is_some_and(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let line_start = text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    text[line_start..start]
+        .to_ascii_lowercase()
+        .contains("version")
 }
 
 fn redact_steamid64(text: &str) -> String {
@@ -715,6 +873,38 @@ fn redact_secret_line(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lists_every_graphics_package() {
+        let q = "firefox 140-1\nlib32-vulkan-radeon 3:26.3.1-5\nvulkan-mesa-implicit-layers 3:26.3.1-5\nlib32-nvidia-utils 620.73.04-1\nnvidia-settings 620.73.04-1\nlinux-cachyos-headers 7.3.6-2\nproton-cachyos-slr 1:11.0-1\nsteam 1.0.0.85-3\nobs-vkcapture 1.5-1\n";
+        let p = gaming_packages(q);
+        for want in [
+            "lib32-vulkan-radeon",
+            "vulkan-mesa-implicit-layers",
+            "lib32-nvidia-utils",
+            "nvidia-settings",
+            "proton-cachyos-slr",
+            "steam 1.0.0.85-3",
+            "obs-vkcapture",
+        ] {
+            assert!(
+                p.iter().any(|l| l.starts_with(want)),
+                "{want} missing from {p:?}"
+            );
+        }
+        assert!(!p
+            .iter()
+            .any(|l| l.starts_with("firefox") || l.starts_with("linux-cachyos-headers")));
+    }
+
+    #[test]
+    fn explains_a_usb_device_that_never_starts() {
+        let log = "2026-11-25T07:50:57-08:00 cachyos kernel: usb 8-6: device not accepting address 6, error -71\n2026-11-25T07:51:08-08:00 cachyos kernel: usb usb8-port6: unable to enumerate USB device\n";
+        let h = hardware_hints(log);
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert!(h[0].starts_with("A USB device on port 8-6 doesn't start"));
+        assert!(hardware_hints("nothing here").is_empty());
+    }
+
     use super::*;
     use crate::testutil::FakeSteam;
 
@@ -727,6 +917,17 @@ mod tests {
         assert!(!clean.contains("192.168.1.50") && !clean.contains("203.0.113.7"));
         assert!(!clean.contains("GPU-00000000"), "GPU UUID removed");
         assert!(clean.contains("GPU-<id>"));
+        // Versions that look like addresses are kept; real identifiers are hidden.
+        let t = redact_patterns("\"steam 1.0.0.85-3\"\nconformanceVersion = 1.4.3.0\nserver 192.168.1.20 up\ndeviceUUID         = df5ac9e6-eac4-feb8-506c-c5f52cb98b0d\ndriverUUID = 9e20a2ff-3e91-5184-8cb2-81aca6a96652\nMoonSweepers.exe -force-d3d11 +connect_lobby 109775243962158414\", ProcID 1");
+        assert!(t.contains("steam 1.0.0.85-3"), "{t}");
+        assert!(t.contains("conformanceVersion = 1.4.3.0"), "{t}");
+        assert!(t.contains("server <ip> up"), "{t}");
+        assert!(t.contains("deviceUUID         = <id>"), "{t}");
+        assert!(
+            t.contains("driverUUID = 9e20a2ff"),
+            "driver IDs are the same on every PC: {t}"
+        );
+        assert!(t.contains("+connect_lobby <lobby>"), "{t}");
         assert!(
             clean.contains("Xid (PCI:0000:02:00): 109"),
             "crash lines kept"

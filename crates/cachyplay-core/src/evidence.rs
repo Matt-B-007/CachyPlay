@@ -17,12 +17,23 @@ pub struct KernelLogs {
     pub previous_boot: Option<String>,
 }
 
-/// Remove firewall log lines: they hold network addresses and say nothing about games.
+/// Kernel messages that appear on many PCs at every boot and have nothing to do with games.
+const HARMLESS: &[&str] = &[
+    "CIFS: No dialect specified on mount",
+    "uses wireless extensions which will stop working for Wi-Fi 7",
+    "virt/tdx: TDX not supported",
+    "loading out-of-tree module taints kernel",
+    "UVC non compliance",
+];
+
+/// Remove firewall log lines (they hold network addresses) and harmless boot messages.
 pub fn drop_noise(text: &str) -> String {
     text.lines()
         .filter(|l| {
             !(l.contains("[UFW ")
-                || (l.contains(" IN=") && l.contains(" SRC=") && l.contains(" DST=")))
+                || (l.contains(" IN=") && l.contains(" SRC=") && l.contains(" DST="))
+                || HARMLESS.iter().any(|h| l.contains(h))
+                || l.trim_end().ends_with("kernel:"))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -77,14 +88,42 @@ pub fn crash_events(
     {
         faults.extend(crashmatch::parse_kernel_faults(t, now));
     }
-    faults.sort_by_key(|f| f.at);
-    faults.dedup_by(|a, b| a.line == b.line);
+    let faults = remember_faults(paths, faults, now);
     let mut sessions = Vec::new();
     if let Some(c) = ctx {
         sessions.extend(crashmatch::parse_steam_sessions(&c.steam.console_logs()));
     }
     sessions.extend(crashmatch::sessions_from_launches(&all_launches(paths)));
     crashmatch::crash_events(&faults, &sessions, now)
+}
+
+/// How long CachyPlay remembers graphics driver crashes it has seen.
+pub const CRASH_HISTORY_DAYS: i64 = 30;
+
+fn crash_history(paths: &Paths) -> std::path::PathBuf {
+    paths.state.join("gpu-crash-lines.log")
+}
+
+/// Merge the crashes in today's kernel logs with the ones CachyPlay saw before, and save the
+/// result. The kernel log only goes back two boots, so without this, two restarts erase the
+/// evidence. Only the matching kernel lines are kept, for 30 days.
+fn remember_faults(
+    paths: &Paths,
+    mut faults: Vec<crashmatch::GpuFault>,
+    now: NaiveDateTime,
+) -> Vec<crashmatch::GpuFault> {
+    let file = crash_history(paths);
+    let saved = fs::read_to_string(&file).unwrap_or_default();
+    faults.extend(crashmatch::parse_kernel_faults(&saved, now));
+    faults.retain(|f| now - f.at <= chrono::Duration::days(CRASH_HISTORY_DAYS));
+    faults.sort_by_key(|f| f.at);
+    faults.dedup_by(|a, b| a.line == b.line);
+    let text: String = faults.iter().map(|f| format!("{}\n", f.line)).collect();
+    if text != saved && std::env::var_os("CACHYPLAY_KERNEL_LOG_FILE").is_none() {
+        let _ = fs::create_dir_all(&paths.state);
+        let _ = crate::fsutil::atomic_write(&file, text.as_bytes());
+    }
+    faults
 }
 
 pub fn all_launches(paths: &Paths) -> Vec<LaunchRecord> {
@@ -165,6 +204,32 @@ pub fn read_driver_updates() -> Vec<DriverUpdate> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crashes_survive_restarts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = Paths::isolated(tmp.path());
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 25)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let line = "2026-11-24T13:52:01-08:00 host kernel: NVRM: Xid (PCI:0000:02:00): 109, pid=395739, name=Unity Main Thre, channel 0x1e, errorString CTX SWITCH TIMEOUT";
+        let old = "2026-10-01T10:00:00-08:00 host kernel: NVRM: Xid (PCI:0000:02:00): 31, pid=1, name=x, channel 0x1";
+        // Seen once in the kernel log...
+        let first = remember_faults(&p, crashmatch::parse_kernel_faults(line, now), now);
+        assert_eq!(first.len(), 1);
+        // ...two restarts later the kernel log no longer has it, but CachyPlay does.
+        let later = remember_faults(&p, vec![], now);
+        assert_eq!(later.len(), 1);
+        assert_eq!(later[0].xid, Some(109));
+        // Seeing it again doesn't count it twice; crashes older than 30 days are forgotten.
+        let again = remember_faults(
+            &p,
+            crashmatch::parse_kernel_faults(&format!("{line}\n{old}"), now),
+            now,
+        );
+        assert_eq!(again.len(), 1);
+    }
+
     use super::*;
 
     #[test]

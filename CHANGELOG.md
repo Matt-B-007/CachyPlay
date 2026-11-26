@@ -12,9 +12,31 @@ v0.1.0-beta.6 (new layout: game list on the left, one clear status and button pe
 v0.1.0-beta.7 (one-command installer, working update button, OBS game capture),
 v0.1.0-beta.8 (installer falls back to the newest beta; OBS test fix),
 v0.1.0-beta.9 (plain-language diagnosis, Fix it, PC check, Proton history, settings page, themes),
-v0.1.0-beta.10 (crash times no longer depend on the PC's time zone; dependency updates).
+v0.1.0-beta.10 (crash times no longer depend on the PC's time zone; dependency updates),
+v0.1.0-beta.11 (graphics card vs built-in chip, crash history across restarts, accurate bug reports,
+automatic releases).
 
 ### Added
+- **Use the graphics card (beta.11)**: on PCs that also have a graphics chip built into the
+  processor or motherboard, CachyPlay points the games it's on for at the graphics card (NVIDIA:
+  PRIME offload settings; AMD/Intel cards: Mesa's device selection; DirectX games through DXVK and
+  VKD3D too). On by default, with a switch per game. Settings you set yourself win.
+- **Which chip each start used (beta.11)**: shown in the game's History, and the game page says so
+  near the top if a game ran on the built-in chip.
+- **Monitor check (beta.11)**: the PC check warns when the monitor is plugged into the motherboard
+  instead of the graphics card. Laptops are recognised and get a note instead.
+- **Crash history across restarts (beta.11)**: graphics driver crashes are remembered for 30 days.
+  Before, the kernel log only reached back two starts of the PC.
+- **Fuller general bug reports (beta.11)**: every game and its state, PC check and self-test
+  results, the driver and kernel update timeline, hardware hints (like a USB device that fails to
+  start every time), and every installed graphics and gaming package.
+- **Delete old copies of Windows files (beta.11)** set aside by resets, with the space they use; the
+  PC check says how much space they take. `cachyplay reset-prefix all --delete-kept`.
+- **Switch to Stable now (beta.11)**: on a beta that's newer than the newest stable, choosing Stable
+  offers to install that stable version straight away. `cachyplay update --to-stable`.
+- **Automatic releases (beta.11)**: pushing a new version number to GitHub tests, tags and
+  publishes it by itself. Nothing is published if a test fails, and a version that would rank below
+  an existing release is refused.
 - **Three-line summary (beta.9)** at the top of every game: what happened, why (with how sure
   CachyPlay is: Likely, Possible or Not sure yet), and what to do. One **Fix it** button applies the
   most likely one-click fix, and says what it will try.
@@ -122,6 +144,17 @@ v0.1.0-beta.10 (crash times no longer depend on the PC's time zone; dependency u
   automatic dependency updates; `scripts/release-check.sh`, RELEASING.md and SUPPORT.md.
 
 ### Fixed
+- 32-bit driver check (beta.11): no more "32-bit AMD driver missing" on PCs with an NVIDIA card and
+  a Ryzen processor's built-in graphics. It now checks the driver library and pacman's records
+  instead of a file name Mesa changed, and only for the chip games draw on.
+- Bug reports (beta.11) no longer blank out version numbers that look like network addresses, and
+  now hide Steam's device ID and lobby IDs. Harmless kernel messages are left out.
+- Restore all and Uninstall (beta.11) put back any Proton version CachyPlay switched (or keep it, with
+  "Keep the settings"), keep the "Use the graphics card" settings with "Keep the settings", and
+  say where old copies of Windows files are.
+- Updates (beta.11) never offer a release that has no download attached.
+- Theme (beta.11): "Follow my desktop" reads the desktop's own setting, and is dark when it doesn't
+  say (before, it often turned light).
 - Crash times (beta.10) are kept as the wall-clock time they were written, like Steam's own log,
   instead of being converted to the PC's current time zone. Before, a time-zone or daylight-saving
   change could stop crashes from lining up with the game that was running; it also made two tests

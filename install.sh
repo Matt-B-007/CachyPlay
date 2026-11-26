@@ -69,23 +69,39 @@ ask() { # ask "Question?" -> 0 for yes. Reads the keyboard even when this script
 
 gh_ok() { have gh && gh auth status >/dev/null 2>&1; }
 
-# Print the newest release tag on a channel ("stable" or "beta"); empty if there is none.
-newest_tag() {
+# Every published release that has a Linux download attached, one per line: "<tag> <true|false>"
+# (the second word says whether it's a beta). Releases without a download are skipped.
+releases_with_builds() {
     if gh_ok; then
-        if [ "$1" = beta ]; then
-            gh api "repos/$REPO/releases?per_page=30" --jq '[.[] | select(.draft | not)][0].tag_name // empty' 2>/dev/null || true
-        else
-            gh api "repos/$REPO/releases?per_page=30" --jq '[.[] | select((.draft | not) and (.prerelease | not))][0].tag_name // empty' 2>/dev/null || true
-        fi
+        gh api "repos/$REPO/releases?per_page=50" --jq \
+            '.[] | select(.draft | not) | select([.assets[].name] | any(endswith("-x86_64-linux.tar.zst"))) | "\(.tag_name) \(.prerelease)"' \
+            2>/dev/null || true
     elif have curl; then
-        if [ "$1" = beta ]; then
-            url="https://api.github.com/repos/$REPO/releases?per_page=1"
-        else
-            url="https://api.github.com/repos/$REPO/releases/latest"
-        fi
-        curl -fsSL -A cachyplay-installer "$url" 2>/dev/null |
-            grep -o '"tag_name": *"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/' || true
+        # Without jq: read tag_name, draft, prerelease and asset names release by release.
+        curl -fsSL -A cachyplay-installer "https://api.github.com/repos/$REPO/releases?per_page=50" 2>/dev/null |
+            awk '
+                function flush() { if (tag != "" && build && draft != "true") print tag, pre; tag = ""; build = 0; draft = ""; pre = "false" }
+                /"tag_name":/   { flush(); match($0, /"tag_name": *"[^"]*"/); t = substr($0, RSTART, RLENGTH); sub(/.*"tag_name": *"/, "", t); sub(/"$/, "", t); tag = t }
+                /"draft":/      { draft = ($0 ~ /true/) ? "true" : "false" }
+                /"prerelease":/ { pre = ($0 ~ /true/) ? "true" : "false" }
+                /"name": *"[^"]*-x86_64-linux\.tar\.zst"/ { build = 1 }
+                END { flush() }' || true
     fi
+}
+
+# Print the newest release tag on a channel ("stable" or "beta") that has a download; empty if
+# there is none. Compares version numbers instead of trusting GitHub's order, and ranks a finished
+# version above its betas (0.1.0 > 0.1.0-beta.10 > 0.1.0-beta.9).
+newest_tag() {
+    releases_with_builds |
+        while read -r tag pre; do
+            [ "$1" = beta ] || [ "$pre" = false ] || continue
+            case "$tag" in
+            *-*) echo "$tag $tag" ;;
+            *) echo "$tag-zzz $tag" ;; # "zzz" sorts after "beta" and "rc", so finished versions win
+            esac
+        done |
+        sort -V -k1,1 | tail -n 1 | cut -d' ' -f2
 }
 
 # Print the tag of the release to install (empty if none can be found).

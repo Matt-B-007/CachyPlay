@@ -1,69 +1,120 @@
 name: Release
 
-# Push a tag to release:  v0.1.0 (stable)  or  v0.2.0-beta.1 (beta, published as a pre-release).
-# Never move or reuse a tag; fix mistakes with a new patch version.
+# Fully automatic. Every push to main looks at the version in Cargo.toml:
+#   - already released?  nothing to do.
+#   - new version?       test, build, tag it vX.Y.Z[-beta.N] and publish the release
+#                        (as a pre-release when the version contains "-beta.").
+# To release, bump `version` in Cargo.toml and push. No tags to make by hand.
+# If a test fails, nothing is published: fix it and push again.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+
+      - name: Is this version new?
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+          assets=$(gh release view "v$ver" --json assets --jq '[.assets[].name | select(endswith(".tar.zst"))] | length' 2>/dev/null || echo 0)
+          if [ "$assets" -gt 0 ]; then
+            echo "v$ver is already released. Bump the version in Cargo.toml to release again."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh release list --limit 200 --json tagName --jq '.[].tagName' | sh scripts/version-guard.sh "$ver"
+          echo "new=true" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$ver."
+
       - name: Install GUI build dependencies (Tauri / WebKitGTK)
+        if: steps.ver.outputs.new == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.ver.outputs.new == 'true'
       - uses: Swatinem/rust-cache@v2
+        if: steps.ver.outputs.new == 'true'
 
-      # The app compares its own version with releases, so they must match exactly:
-      # tag v0.1.0-beta.2 needs version = "0.1.0-beta.2" in Cargo.toml.
-      - name: Check the tag matches Cargo.toml
+      - name: Cargo.lock matches the version
+        if: steps.ver.outputs.new == 'true'
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          crate=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          [ "$tag" = "$crate" ] || { echo "Tag v$tag does not match Cargo.toml version $crate. Set version = \"$tag\" in Cargo.toml."; exit 1; }
+          grep -q "\"${{ steps.ver.outputs.version }}\"" Cargo.lock || { echo "Cargo.lock is out of date: run cargo update --workspace and push again."; exit 1; }
 
-      - run: cargo test --workspace --locked
+      - name: Tests (nothing is published if these fail)
+        if: steps.ver.outputs.new == 'true'
+        run: |
+          cargo test --workspace --locked
+          TZ=Asia/Tokyo cargo test --workspace --locked
 
       # Generic x86-64: no target-cpu=native, so it runs on every CachyOS/Arch machine.
-      - run: cargo build --workspace --release --locked
+      - name: Build
+        if: steps.ver.outputs.new == 'true'
+        run: |
+          cargo build --workspace --release --locked
+          got=$(./target/release/cachyplay --version)
+          [ "$got" = "cachyplay ${{ steps.ver.outputs.version }}" ] || { echo "The build reports '$got'"; exit 1; }
 
       - name: Package
+        if: steps.ver.outputs.new == 'true'
         run: |
-          name="cachyplay-${GITHUB_REF_NAME}-x86_64-linux"
+          name="cachyplay-${{ steps.ver.outputs.tag }}-x86_64-linux"
           mkdir -p "dist/$name"
           cp target/release/cachyplay target/release/cachyplay-gui install.sh README.md LICENSE CHANGELOG.md "dist/$name/"
           cp assets/cachyplay.svg "dist/$name/"
           (cd dist && tar --zstd -cf "$name.tar.zst" "$name" && sha256sum "$name.tar.zst" > SHA256SUMS.txt)
+          cp install.sh dist/install.sh
+
       - name: Sign the checksums (if a signing key is set up; see RELEASING.md)
+        if: steps.ver.outputs.new == 'true'
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
         run: |
           if [ -n "$MINISIGN_KEY" ]; then
             sudo apt-get install -y minisign
             printf '%s\n' "$MINISIGN_KEY" > /tmp/minisign.key
-            minisign -S -s /tmp/minisign.key -m dist/SHA256SUMS.txt -t "CachyPlay ${GITHUB_REF_NAME}"
+            minisign -S -s /tmp/minisign.key -m dist/SHA256SUMS.txt -t "CachyPlay ${{ steps.ver.outputs.tag }}"
             rm -f /tmp/minisign.key
           else
             echo "No MINISIGN_KEY secret: release is checksummed but not signed."
           fi
 
       - name: Release notes from CHANGELOG
+        if: steps.ver.outputs.new == 'true'
         run: |
-          ver="${GITHUB_REF_NAME#v}"; ver="${ver%%-*}"
-          awk -v v="$ver" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          ver="${{ steps.ver.outputs.version }}"; base="${ver%%-*}"
+          awk -v v="$base" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "CachyPlay $ver" > notes.md
 
+      # Creates the tag on this commit and publishes the release with the download attached.
       - uses: softprops/action-gh-release@v3
+        if: steps.ver.outputs.new == 'true'
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: CachyPlay ${{ steps.ver.outputs.tag }}
           body_path: notes.md
-          prerelease: ${{ contains(github.ref_name, '-beta.') }}
+          prerelease: ${{ contains(steps.ver.outputs.version, '-beta.') }}
+          make_latest: ${{ !contains(steps.ver.outputs.version, '-') }}
+          fail_on_unmatched_files: false
           files: |
             dist/*.tar.zst
             dist/SHA256SUMS.txt
             dist/SHA256SUMS.txt.minisig
+            dist/install.sh

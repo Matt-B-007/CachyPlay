@@ -129,6 +129,20 @@ pub struct GameDetail {
     pub crashes: Vec<CrashInfo>,
     /// OBS game capture for this game.
     pub obs: crate::obs::ObsInfo,
+    /// "Use the graphics card", on PCs with a card and a built-in chip (None otherwise).
+    pub graphics_card: Option<CardInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CardInfo {
+    pub on: bool,
+    /// "the NVIDIA graphics card"
+    pub card: String,
+    /// "the built-in AMD graphics chip"
+    pub builtin: String,
+    /// The chip the last start used, if CachyPlay could tell.
+    pub last_used: Option<String>,
+    pub last_was_builtin: bool,
 }
 
 /// The installed `cachyplay` command (what Steam's launch options point to).
@@ -514,6 +528,44 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
         });
     }
     let launches = recent_launches(&ctx.paths, &game.app_id, 5);
+    let gpus = crate::gpus::list(&crate::pccheck::Root::system());
+    let graphics_card = crate::gpus::has_both(&gpus).then(|| {
+        let last = launches.iter().find(|l| l.gpu.is_some());
+        CardInfo {
+            on: crate::gpus::prefer_card_for(&ctx.paths, &game.app_id),
+            card: gpus
+                .iter()
+                .find(|g| !g.integrated)
+                .map(|g| g.describe())
+                .unwrap_or_default(),
+            builtin: gpus
+                .iter()
+                .find(|g| g.integrated)
+                .map(|g| g.describe())
+                .unwrap_or_default(),
+            last_used: last.and_then(|l| l.gpu.clone()),
+            last_was_builtin: last.is_some_and(|l| l.gpu_integrated == Some(true)),
+        }
+    });
+    if let Some(c) = graphics_card.as_ref().filter(|c| c.on) {
+        changes.push(ChangeRow {
+            setting: "Use the graphics card".into(),
+            technical: Some(
+                crate::gpus::prefer_card_env(&gpus)
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            stock: "The game picks".into(),
+            cachyplay: "Graphics card".into(),
+            why: format!(
+                "This PC also has {}. These settings make sure the game draws on {}.",
+                c.builtin, c.card
+            ),
+            status: "fix".into(),
+        });
+    }
     let events = current_events(ctx);
     let crash_list: Vec<CrashInfo> = events
         .iter()
@@ -547,6 +599,7 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
             .unwrap_or_default(),
         user_options,
         obs,
+        graphics_card,
         edited_since: status.as_ref().is_some_and(|s| s.edited_since),
         tweaks: status.map(|s| s.tweaks).unwrap_or_default(),
         fix: recipe.as_ref().map(|r| FixInfo {
@@ -582,11 +635,20 @@ fn pipeline(game: &Game, facts: &Facts, last: Option<&LaunchRecord>) -> Vec<Pipe
         }
     };
     let vendor = facts.values.get("gpu.vendor").cloned().unwrap_or_default();
-    let gpu = match vendor.as_str() {
-        "nvidia" => node("GPU", "ok", "NVIDIA"),
-        "amd" => node("GPU", "ok", "AMD"),
-        "intel" => node("GPU", "ok", "Intel"),
-        _ => node("GPU", "neutral", "Not detected"),
+    let used = last.and_then(|l| {
+        l.gpu
+            .as_deref()
+            .map(|g| (g, l.gpu_integrated == Some(true)))
+    });
+    let gpu = match (used, vendor.as_str()) {
+        (Some((g, true)), _) => node("GPU", "warn", &format!("Ran on {g}")),
+        (Some((g, false)), _) => node("GPU", "ok", &format!("Ran on {g}")),
+        (None, v) => match v {
+            "nvidia" => node("GPU", "ok", "NVIDIA"),
+            "amd" => node("GPU", "ok", "AMD"),
+            "intel" => node("GPU", "ok", "Intel"),
+            _ => node("GPU", "neutral", "Not detected"),
+        },
     };
     let session = facts.values.get("session").cloned().unwrap_or_default();
     let display = match session.as_str() {

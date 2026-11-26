@@ -106,6 +106,25 @@ fn set_obs_capture(app_id: String, on: bool) -> CmdResult<String> {
     Ok(msg)
 }
 
+/// "What happened?" for one start, and/or whether it was online.
+#[tauri::command]
+fn set_run_note(
+    app_id: String,
+    start: String,
+    kind: String,
+    online: Option<bool>,
+) -> CmdResult<()> {
+    let p = paths()?;
+    cachyplay_core::notes::set(&p, &app_id, &start, &kind, online).map_err(|e| format!("{e:#}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_online_only(app_id: String, on: bool) -> CmdResult<()> {
+    let p = paths()?;
+    cachyplay_core::notes::set_online_only(&p, &app_id, on).map_err(|e| format!("{e:#}"))
+}
+
 /// "Use the graphics card" for one game (PCs with two graphics chips).
 #[tauri::command]
 fn set_prefer_card(app_id: String, on: bool) -> CmdResult<String> {
@@ -170,6 +189,128 @@ fn undo_compat_tool(app_id: String) -> CmdResult<String> {
     Ok("Put the game back on the compatibility tool it used before.".into())
 }
 
+/// Everything the app polls every few seconds: Steam's state, a fingerprint of the data the
+/// pages are built from (so the app refreshes when a game starts, ends or crashes), and the
+/// changes waiting for Steam to close.
+#[derive(serde::Serialize)]
+struct Live {
+    steam: cachyplay_core::live::SteamState,
+    token: String,
+    waiting: Vec<cachyplay_core::live::Action>,
+}
+
+#[tauri::command]
+fn live_status() -> CmdResult<Live> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    Ok(Live {
+        steam: cachyplay_core::live::steam_state(&c.proc_root),
+        token: cachyplay_core::live::token(&c),
+        waiting: cachyplay_core::live::queue(&p),
+    })
+}
+
+/// Save a change to run once Steam closes.
+#[tauri::command]
+fn queue_action(action: cachyplay_core::live::Action) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let name = c
+        .steam
+        .find_game(action.app_id())
+        .map(|g| g.name)
+        .unwrap_or_else(|| action.app_id().to_string());
+    let what = action.describe(&name);
+    cachyplay_core::live::enqueue(&p, action).map_err(|e| format!("{e:#}"))?;
+    Ok(format!(
+        "{what}: waiting for Steam to close. It happens by itself the moment Steam exits."
+    ))
+}
+
+#[tauri::command]
+fn cancel_waiting(app_id: String) -> CmdResult<()> {
+    let p = paths()?;
+    cachyplay_core::live::cancel(&p, &app_id).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn run_waiting() -> CmdResult<Vec<String>> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let bin = library::installed_cli(&p);
+    cachyplay_core::live::run_queue(&c, bin.as_deref()).map_err(|e| format!("{e:#}"))
+}
+
+/// Ask Steam to quit properly (the same as Steam → Exit).
+#[tauri::command]
+fn close_steam() -> CmdResult<String> {
+    std::process::Command::new("steam")
+        .arg("-shutdown")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Couldn't ask Steam to close ({e}). Use Steam → Exit instead."))?;
+    Ok("Asked Steam to close. Waiting changes run as soon as it has.".into())
+}
+
+#[tauri::command]
+fn open_steam() -> CmdResult<String> {
+    let started = std::process::Command::new("setsid")
+        .args(["-f", "steam"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .or_else(|_| {
+            std::process::Command::new("steam")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        });
+    started.map_err(|e| format!("Couldn't start Steam ({e})."))?;
+    Ok("Starting Steam.".into())
+}
+
+#[tauri::command]
+fn reset_shader_cache(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = game_of(&c, &app_id)?;
+    cachyplay_core::shadercache::reset(&c, &g).map_err(|e| format!("{e:#}"))?;
+    let _ = cachyplay_core::fixes::apply(
+        &p,
+        &app_id,
+        cachyplay_core::fixes::Fix {
+            id: "shader_cache".into(),
+            label: "Fresh shader cache".into(),
+            ..Default::default()
+        },
+    );
+    Ok(format!("Moved {}'s shader cache aside. Steam rebuilds it on the next start (expect a little stutter at first). Undo puts the old one back.", g.name))
+}
+
+#[tauri::command]
+fn undo_shader_cache(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = game_of(&c, &app_id)?;
+    cachyplay_core::shadercache::undo(&c, &g).map_err(|e| format!("{e:#}"))?;
+    let _ = cachyplay_core::fixes::remove(&p, &app_id, "shader_cache");
+    Ok(format!("Put {}'s old shader cache back.", g.name))
+}
+
+/// "Try these settings" for one game.
+#[tauri::command]
+fn set_your_settings(app_id: String, text: String) -> CmdResult<String> {
+    let p = paths()?;
+    Ok(match cachyplay_core::fixes::set_your_settings(&p, &app_id, &text).map_err(|e| format!("{e:#}"))? {
+        Some(_) => "Saved. They're used the next time the game starts (CachyPlay must be on for the game).".into(),
+        None => "Your settings for this game were removed.".into(),
+    })
+}
+
 #[tauri::command]
 fn set_enabled(app_id: String, enabled: bool) -> CmdResult<String> {
     let p = paths()?;
@@ -178,6 +319,7 @@ fn set_enabled(app_id: String, enabled: bool) -> CmdResult<String> {
         .steam
         .find_game(&app_id)
         .ok_or_else(|| format!("Game {app_id} is not installed"))?;
+    let _ = cachyplay_core::live::cancel(&p, &app_id);
     if enabled {
         let bin = library::installed_cli(&p)
             .ok_or("CachyPlay isn't installed yet. Use the Install button at the top first.")?;
@@ -736,6 +878,7 @@ fn open_issue_page() -> CmdResult<()> {
 fn main() {
     if let Ok(p) = Paths::from_env() {
         cachyplay_core::housekeeping::protect_settings(&p);
+        cachyplay_core::install::refresh_menu_entries(&p);
     }
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -744,6 +887,17 @@ fn main() {
             cover,
             set_enabled,
             set_prefer_card,
+            live_status,
+            queue_action,
+            cancel_waiting,
+            run_waiting,
+            close_steam,
+            open_steam,
+            set_your_settings,
+            reset_shader_cache,
+            undo_shader_cache,
+            set_run_note,
+            set_online_only,
             switch_compat_tool,
             undo_compat_tool,
             set_obs_capture,

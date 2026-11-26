@@ -81,8 +81,10 @@ fn prepare(paths: &Paths, app_id: Option<&str>) -> anyhow::Result<Plan> {
     };
     // Fixes you applied from a suggestion win over the fix file.
     for fix in crate::fixes::load(paths, app_id).fixes {
+        let yours = fix.id == crate::fixes::YOUR_SETTINGS;
         for (k, v) in &fix.env {
-            if !crate::fixes::fix_env_allowed(k) {
+            if !(crate::fixes::fix_env_allowed(k) || yours && crate::fixes::your_setting_allowed(k))
+            {
                 continue;
             }
             plan.env.retain(|(name, _, _)| name != k);
@@ -90,6 +92,35 @@ fn prepare(paths: &Paths, app_id: Option<&str>) -> anyhow::Result<Plan> {
         }
         plan.extra_args.extend(fix.args.iter().cloned());
         plan.applied.push(format!("Fix: {}", fix.label));
+    }
+    // The detailed Proton log goes to a folder CachyPlay knows, whichever Proton writes it.
+    if plan.env.iter().any(|(k, _, _)| k == "PROTON_LOG")
+        && std::env::var_os("PROTON_LOG_DIR").is_none()
+    {
+        let dir = paths.state.join("proton-logs");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            plan.env.push((
+                "PROTON_LOG_DIR".into(),
+                dir.to_string_lossy().into_owned(),
+                "Detailed Proton log".into(),
+            ));
+        }
+    }
+    // "Record performance": MangoHud logs FPS and frame times without showing its overlay.
+    if plan
+        .env
+        .iter()
+        .any(|(k, v, _)| k == "MANGOHUD_CONFIG" && v.contains("autostart_log"))
+    {
+        let dir = paths.state.join("performance");
+        let _ = std::fs::create_dir_all(&dir);
+        for e in plan
+            .env
+            .iter_mut()
+            .filter(|(k, _, _)| k == "MANGOHUD_CONFIG")
+        {
+            e.1 = format!("{},output_folder={}", e.1, dir.display());
+        }
     }
     // Two graphics chips: make sure the game draws on the card, not the built-in chip. Settings
     // you set yourself (in launch options or a fix) win.
@@ -194,10 +225,15 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
         }
         Err(e) => Err(e),
     };
-    if let (Ok(c), Some(_)) = (&child, &app_id) {
+    let mut gpu_log = None;
+    if let (Ok(c), Some(id)) = (&child, &app_id) {
         watch_chip(c.id(), chip.clone());
+        gpu_log = crate::gpulog::start(paths, id, &started_at);
     }
     let status = child.and_then(|mut c| c.wait());
+    if let Some(g) = gpu_log {
+        g.stop();
+    }
     let runtime = start.elapsed().as_secs_f64();
 
     let (code, signal) = match &status {
@@ -247,6 +283,17 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
             };
             if let Some(path) = &record_path {
                 let _ = write_json(path, &rec);
+            }
+            // Diagnostic-only fixes (detailed Proton log, performance recording) are for one run.
+            if runtime >= 30.0 && !passthrough {
+                let all = crate::fixes::load(paths, id);
+                for f in all.fixes.iter().filter(|f| f.temporary) {
+                    let _ = crate::fixes::remove(paths, id, &f.id);
+                    log(
+                        paths,
+                        &format!("app {id}: \"{}\" turned off after one run", f.label),
+                    );
+                }
             }
             crate::housekeeping::trim(paths);
             if failed {

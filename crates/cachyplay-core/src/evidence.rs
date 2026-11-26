@@ -97,6 +97,26 @@ pub fn crash_events(
     crashmatch::crash_events(&faults, &sessions, now)
 }
 
+/// The game's detailed Proton log: CachyPlay's own folder (it sets PROTON_LOG_DIR there) or the
+/// home folder (Proton's default), whichever was written last.
+pub fn proton_log(
+    paths: &Paths,
+    app_id: &str,
+) -> Option<(std::path::PathBuf, chrono::NaiveDateTime)> {
+    let name = format!("steam-{app_id}.log");
+    [
+        paths.state.join("proton-logs").join(&name),
+        paths.home.join(&name),
+    ]
+    .into_iter()
+    .filter_map(|p| {
+        let t = fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+        let t = chrono::DateTime::<chrono::Local>::from(t).naive_local();
+        Some((p, t))
+    })
+    .max_by_key(|x| x.1)
+}
+
 /// How long CachyPlay remembers graphics driver crashes it has seen.
 pub const CRASH_HISTORY_DAYS: i64 = 30;
 
@@ -154,11 +174,11 @@ pub fn driver_updates(pacman_log: &str) -> Vec<DriverUpdate> {
         .filter_map(|l| {
             let rest = l.strip_prefix('[')?;
             let (stamp, rest) = rest.split_once(']')?;
+            let rest = rest.trim_start().strip_prefix("[ALPM]")?.trim_start();
+            // Going back to an older driver shows up as "downgraded".
             let rest = rest
-                .trim_start()
-                .strip_prefix("[ALPM]")?
-                .trim_start()
-                .strip_prefix("upgraded ")?;
+                .strip_prefix("upgraded ")
+                .or_else(|| rest.strip_prefix("downgraded "))?;
             let (pkg, vers) = rest.split_once(' ')?;
             if !is_graphics_package(pkg) {
                 return None;

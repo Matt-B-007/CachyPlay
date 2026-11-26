@@ -13,7 +13,7 @@ use regex::Regex;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct GpuFault {
     pub at: NaiveDateTime,
     pub vendor: &'static str,
@@ -34,6 +34,34 @@ pub struct Session {
     /// The compatibility tool Steam started it with (folder name, e.g. "Proton - Experimental",
     /// "GE-Proton11-12-x86_64"), or None for a native game / unknown.
     pub tool: Option<String>,
+    /// NAME=value settings from the launch options Steam used (CachyPlay's own aren't here).
+    pub settings: Vec<String>,
+}
+
+/// NAME=value words at the start of Steam's launch command, before the first program path.
+pub fn settings_in_command(line: &str) -> Vec<String> {
+    let Some(cmd) = line
+        .split_once("AppID ")
+        .and_then(|(_, r)| r.split_once('"'))
+        .map(|(_, c)| c)
+    else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for tok in cmd.split_whitespace() {
+        if tok.contains('/') || tok == "sh" || tok.starts_with('~') {
+            break;
+        }
+        if let Some((k, _)) = tok.split_once('=') {
+            if !k.is_empty()
+                && k.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            {
+                out.push(tok.to_string());
+            }
+        }
+    }
+    out
 }
 
 impl Session {
@@ -172,6 +200,7 @@ pub fn parse_steam_sessions(text: &str) -> Vec<Session> {
                         end: None,
                         source: "Steam",
                         tool: tool_in_command(line),
+                        settings: settings_in_command(line),
                     });
                 }
             }
@@ -206,6 +235,7 @@ pub fn sessions_from_launches(records: &[LaunchRecord]) -> Vec<Session> {
                 end,
                 source: "CachyPlay",
                 tool: None,
+                settings: vec![],
             })
         })
         .collect()

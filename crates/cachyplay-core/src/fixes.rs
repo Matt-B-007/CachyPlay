@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Fix {
     /// The suggestion this came from, e.g. "disable_vulkan_layers".
     pub id: String,
@@ -53,6 +53,93 @@ pub fn load(paths: &Paths, app_id: &str) -> GameFixes {
 /// Environment variables a fix may set: the recipe allow-list, plus the loader switch for add-ons.
 pub fn fix_env_allowed(k: &str) -> bool {
     env_allowed(k) || k == "VK_LOADER_LAYERS_DISABLE"
+}
+
+/// The id of the "Try these settings" entry.
+pub const YOUR_SETTINGS: &str = "your_settings";
+
+/// Variables a player may not set through "Try these settings": they change how programs load or
+/// where they look for things, not how a game draws.
+const NEVER: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "PYTHONPATH",
+    "PERL5LIB",
+    "STEAM_COMPAT_DATA_PATH",
+    "STEAM_COMPAT_CLIENT_INSTALL_PATH",
+    "WINEPREFIX",
+];
+
+pub fn your_setting_allowed(k: &str) -> bool {
+    !NEVER.contains(&k)
+        && !k.is_empty()
+        && k.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Parse "VKD3D_CONFIG=no_upload_hvv -force-d3d12" into settings and game options.
+pub fn parse_settings(text: &str) -> Result<(BTreeMap<String, String>, Vec<String>)> {
+    let mut env = BTreeMap::new();
+    let mut args = Vec::new();
+    for tok in text.split_whitespace() {
+        if tok == "%command%" {
+            bail!("Leave out %command%: CachyPlay adds these for you.");
+        }
+        if tok.contains(['`', ';', '$', '|', '&', '<', '>', '\'', '"']) {
+            bail!("{tok:?} has characters that aren't allowed here.");
+        }
+        match tok.split_once('=') {
+            Some((k, v)) if !k.is_empty() && !k.starts_with('-') => {
+                let ok_name = k
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && !k.starts_with(|c: char| c.is_ascii_digit());
+                if !ok_name {
+                    bail!(
+                        "{k:?} isn't a setting name (settings look like NAME=value, in capitals)."
+                    );
+                }
+                if NEVER.contains(&k) {
+                    bail!("{k} can't be set here.");
+                }
+                env.insert(k.to_string(), v.to_string());
+            }
+            _ => args.push(tok.to_string()),
+        }
+    }
+    Ok((env, args))
+}
+
+/// "Try these settings": your own settings and game options for one game, applied by CachyPlay at
+/// launch (Steam's launch options stay as they are). Empty text removes them.
+pub fn set_your_settings(paths: &Paths, app_id: &str, text: &str) -> Result<Option<Fix>> {
+    let text = text.trim();
+    if text.is_empty() {
+        remove(paths, app_id, YOUR_SETTINGS)?;
+        return Ok(None);
+    }
+    let (env, args) = parse_settings(text)?;
+    let fix = Fix {
+        id: YOUR_SETTINGS.into(),
+        label: format!("Your settings: {text}"),
+        env,
+        args,
+        applied_at: now(),
+        temporary: false,
+        verdict: None,
+    };
+    let mut all = load(paths, app_id);
+    all.fixes.retain(|f| f.id != YOUR_SETTINGS);
+    all.fixes.push(fix.clone());
+    write_json(&path(paths, app_id), &all)?;
+    Ok(Some(fix))
 }
 
 pub fn apply(paths: &Paths, app_id: &str, mut fix: Fix) -> Result<()> {
@@ -113,6 +200,33 @@ pub fn games_with_fixes(paths: &Paths) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn your_settings_are_parsed_and_checked() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths::isolated(d.path());
+        let f = set_your_settings(&p, "1240440", "VKD3D_CONFIG=no_upload_hvv  -force-d3d12")
+            .unwrap()
+            .unwrap();
+        assert_eq!(f.env["VKD3D_CONFIG"], "no_upload_hvv");
+        assert_eq!(f.args, vec!["-force-d3d12"]);
+        assert_eq!(
+            f.label,
+            "Your settings: VKD3D_CONFIG=no_upload_hvv  -force-d3d12"
+        );
+        assert_eq!(load(&p, "1240440").fixes.len(), 1);
+        for bad in [
+            "LD_PRELOAD=/tmp/x.so",
+            "game-performance %command%",
+            "X=$(rm)",
+            "lower=1",
+            "A=1;B",
+        ] {
+            assert!(set_your_settings(&p, "1240440", bad).is_err(), "{bad}");
+        }
+        assert!(set_your_settings(&p, "1240440", "  ").unwrap().is_none());
+        assert!(load(&p, "1240440").fixes.is_empty());
+    }
+
     use super::*;
 
     fn fix(id: &str, env: &[(&str, &str)]) -> Fix {

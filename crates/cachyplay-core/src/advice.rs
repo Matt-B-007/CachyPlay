@@ -52,6 +52,14 @@ pub struct Evidence {
     pub anti_cheat: Option<crate::insights::AntiCheat>,
     /// Other games that ran long and clean recently, and how they're set up.
     pub working: Vec<crate::insights::WorkingGame>,
+    /// When CachyPlay switched the compatibility tool.
+    pub switched_at: Option<NaiveDateTime>,
+    /// What the player said about each start ("What happened?").
+    pub notes: crate::notes::RunNotes,
+    /// The time to judge "now" by (tests set it; None means the clock).
+    pub now: Option<NaiveDateTime>,
+    /// Fixes that worked for other games on this PC: (game name, fix id).
+    pub worked_elsewhere: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -104,9 +112,23 @@ pub struct Suggestion {
     /// CachyPlay already switched the tool; offer Undo.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub switched: bool,
+    /// What would prove this is the cause.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
+    /// A one-click action that isn't a launch setting ("reset_shader_cache").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// A bigger change to the PC (like going back to an older driver): shown last, never automatic.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub big_step: bool,
 }
 
 impl Evidence {
+    pub fn now(&self) -> NaiveDateTime {
+        self.now
+            .unwrap_or_else(|| chrono::Local::now().naive_local())
+    }
+
     fn game_events(&self) -> Vec<&CrashEvent> {
         self.events
             .iter()
@@ -137,7 +159,7 @@ impl Evidence {
         out
     }
 
-    fn status_of(&self, id: &str) -> Status {
+    pub(crate) fn status_of(&self, id: &str) -> Status {
         let Some(fix) = self.fixes.fixes.iter().find(|f| f.id == id) else {
             return Status::New;
         };
@@ -156,9 +178,19 @@ impl Evidence {
             .ok()
             .map(|d| d.naive_local());
         let crashed_since = applied_at.is_some_and(|t| self.game_events().iter().any(|e| e.at > t));
+        // Starts in Steam's log count too, even when CachyPlay was off for them.
+        let steam_runs: Vec<&crashmatch::Session> = self
+            .sessions
+            .iter()
+            .filter(|s| s.app_id == self.app_id && applied_at.is_some_and(|t| s.start > t))
+            .filter(|s| {
+                s.duration()
+                    .is_some_and(|d| d.num_seconds() >= history::SHORT)
+            })
+            .collect();
         if crashed_since || since.iter().any(|l| l.failed) {
             Status::DidntHelp
-        } else if since.iter().any(|l| !l.failed) {
+        } else if since.iter().any(|l| !l.failed) || !steam_runs.is_empty() {
             Status::Worked
         } else {
             Status::Applied
@@ -302,24 +334,37 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
 
     // 0b. Launch options in the wrong order (a setting after the game, or a game option before it).
     if let Some((bad, fixed)) = misplaced_launch_options(&ev.user_options) {
+        // While CachyPlay is on, it moves misplaced settings to the right place itself.
+        let handled = ev.cachyplay_on && bad.iter().all(|b| b.contains('='));
         out.push(Suggestion {
             id: "launch_options_order".into(),
             title: "Fix the order of your launch options".into(),
             why: vec![
                 format!("Your launch options are: {}", ev.user_options.trim()),
-                format!(
-                    "{} {} in the wrong place, so Steam passes {} to the game as plain text and {} nothing.",
-                    bad.join(" "),
-                    if bad.len() == 1 { "is" } else { "are" },
-                    if bad.len() == 1 { "it" } else { "them" },
-                    if bad.len() == 1 { "it does" } else { "they do" }
-                ),
+                if handled {
+                    format!(
+                        "{} {} in the wrong place for Steam, but CachyPlay moves {} to the right place while it's on, so {} working now. It only matters if you turn CachyPlay off.",
+                        bad.join(" "),
+                        if bad.len() == 1 { "is" } else { "are" },
+                        if bad.len() == 1 { "it" } else { "them" },
+                        if bad.len() == 1 { "it's" } else { "they're" }
+                    )
+                } else {
+                    format!(
+                        "{} {} in the wrong place, so Steam passes {} to the game as plain text and {} nothing.",
+                        bad.join(" "),
+                        if bad.len() == 1 { "is" } else { "are" },
+                        if bad.len() == 1 { "it" } else { "them" },
+                        if bad.len() == 1 { "it does" } else { "they do" }
+                    )
+                },
             ],
+            confidence: if handled { Confidence::Unsure } else { Confidence::Possible },
             steps: vec![
                 "Settings like NAME=value go before %command%. Game options like -dx11 go after it.".into(),
                 format!("In Steam: right-click the game → Properties → Launch options, and change it to: {fixed}"),
             ],
-            priority: 8,
+            priority: if handled { 85 } else { 8 },
             ..Default::default()
         });
     }
@@ -728,7 +773,22 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
         s.ask_verdict = played_since;
     }
 
-    out.sort_by_key(|s| s.priority);
+    crate::triage::extra_rules(ev, &mut out, &crate::pccheck::Root::system());
+    crate::triage::mark_steam_tries(ev, &mut out);
+    for s in out.iter_mut() {
+        if let Some((game, _)) = ev.worked_elsewhere.iter().find(|(_, id)| *id == s.id) {
+            if s.status != Status::DidntHelp {
+                s.why
+                    .push(format!("This fix worked for {game} on this PC."));
+                s.confidence = match s.confidence {
+                    Confidence::Unsure => Confidence::Possible,
+                    _ => Confidence::Likely,
+                };
+            }
+        }
+    }
+    crate::triage::adjust(ev, &mut out);
+    out.sort_by_key(|s| (s.big_step, s.priority));
     out
 }
 
@@ -981,11 +1041,8 @@ pub fn gather(
         .into_iter()
         .map(|g| (g.app_id, g.name))
         .collect();
-    let proton_log = crate::fsutil::read_capped(
-        &paths.home.join(format!("steam-{}.log", game.app_id)),
-        500,
-        4000,
-    );
+    let proton_log = crate::evidence::proton_log(paths, &game.app_id)
+        .and_then(|(p, _)| crate::fsutil::read_capped(&p, 500, 4000));
     let unity_logs = ctx.steam.unity_logs(game);
     let mut log_findings: Vec<String> = Vec::new();
     for text in proton_log.iter().cloned().chain(
@@ -1051,6 +1108,10 @@ pub fn gather(
         tools: crate::compat::installed(&ctx.steam.root, &ctx.steam.library_folders()),
         forced_tool: ctx.steam.compat_tool(&game.app_id),
         switched_tool: crate::compat::switched_to(ctx, &game.app_id),
+        switched_at: crate::compat::switched_at(ctx, &game.app_id),
+        notes: crate::notes::load(paths, &game.app_id),
+        now: None,
+        worked_elsewhere: worked_elsewhere(ctx, &game.app_id),
         unity,
         anti_cheat: crate::insights::anti_cheat(&game.app_id, &game.install_dir),
         working,
@@ -1084,7 +1145,7 @@ fn confidence_word(c: Confidence) -> &'static str {
     match c {
         Confidence::Likely => "Likely",
         Confidence::Possible => "Possibly",
-        Confidence::Unsure => "Not sure yet",
+        Confidence::Unsure => "Long shot",
     }
 }
 
@@ -1119,11 +1180,49 @@ pub fn summary(ev: &Evidence, suggestions: &[Suggestion]) -> Summary {
     let blocked = suggestions
         .iter()
         .any(|s| s.id == "anti_cheat" && s.confidence == Confidence::Likely);
+    // The status steps decide first: a change being tested, or clean play since the last problem.
+    let prog = crate::progress::progress(ev, ev.now());
+    let asks = suggestions.iter().any(|s| s.ask_verdict);
+    if !blocked && prog.fix_label.is_some() && prog.stage != crate::progress::Stage::NotWorking {
+        use crate::progress::Stage;
+        return Summary {
+            light: prog.light,
+            what: format!("{}.", prog.headline),
+            why: prog.detail.clone(),
+            todo: Some(match prog.stage {
+                _ if prog.ask_online.is_some() => {
+                    "Answer \"Was that online?\" under History so the last start can count.".into()
+                }
+                _ if !ev.cachyplay_on && !prog.fix_label.as_deref().is_some_and(|l| l.starts_with("Switch to")) => {
+                    "Turn CachyPlay on for this game so the fix is used, then start the game from Steam.".into()
+                }
+                _ if asks => "Tell CachyPlay below whether it works now.".into(),
+                Stage::WorksWithFix => "Nothing to do. Keep the fix on.".into(),
+                Stage::SeemsToWork => format!(
+                    "Keep playing as usual; a clean run is {}.",
+                    prog.needed_text
+                ),
+                _ => "Start the game from Steam as usual to try it.".into(),
+            }),
+            fix_id: None,
+            fix_label: None,
+        };
+    }
+    if !blocked && prog.stage == crate::progress::Stage::RunsFine {
+        return Summary {
+            light: Light::Green,
+            what: format!("{}.", prog.headline),
+            why: prog.detail.clone(),
+            todo: None,
+            fix_id: None,
+            fix_label: None,
+        };
+    }
     // A fix (or Proton switch) that's applied and hasn't failed: try that before anything else.
     let pending = suggestions.iter().find(|s| {
         (s.fix.is_some() || s.switched) && matches!(s.status, Status::Applied | Status::Worked)
     });
-    if let (Some(p), false) = (pending, blocked) {
+    if let (Some(p), false, None) = (pending, blocked, &prog.fix_label) {
         let worked = p.status == Status::Worked;
         return Summary {
             light: Light::Yellow,
@@ -1142,7 +1241,9 @@ pub fn summary(ev: &Evidence, suggestions: &[Suggestion]) -> Summary {
             fix_label: None,
         };
     }
-    let (light, what) = if blocked {
+    let (light, what) = if !blocked && prog.fix_label.is_some() {
+        (Light::Red, format!("{}.", prog.headline))
+    } else if blocked {
         (
             Light::Red,
             format!("{} can't be played online on Linux.", ev.game_name),
@@ -1274,6 +1375,59 @@ pub struct Insights {
     /// Space the kept copies use, e.g. "3.2 GB".
     pub kept_size: Option<String>,
     pub has_prefix: bool,
+    /// Status steps (testing / seems to work / works with a fix) and the clean-run target.
+    pub progress: crate::progress::Progress,
+    /// Starts, newest first, with dividers for fixes and updates.
+    pub timeline: Vec<crate::progress::Item>,
+    /// "Find the cause": tests in order, and what's been ruled out.
+    pub find_cause: crate::triage::FindCause,
+    /// Vulkan add-ons installed on this PC, and whether each actually loads into games.
+    pub layers: Vec<LayerInfo>,
+    /// Text for NVIDIA's forum, when the NVIDIA report is suggested.
+    pub nvidia_report: Option<String>,
+    pub shader_cache_aside: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LayerInfo {
+    pub name: String,
+    pub what: String,
+    /// Loads into every Vulkan game unless turned off.
+    pub active: bool,
+    /// Ships with Steam, Mesa, the NVIDIA driver or gamescope.
+    pub trusted: bool,
+}
+
+/// Fixes that worked for other games here: the player said so, or the game has run 15+ minutes
+/// since without a graphics crash.
+fn worked_elsewhere(ctx: &crate::manage::Ctx, this: &str) -> Vec<(String, String)> {
+    let paths = &ctx.paths;
+    let launches = crate::evidence::all_launches(paths);
+    let mut out = Vec::new();
+    for app in crate::fixes::games_with_fixes(paths)
+        .into_iter()
+        .filter(|a| a != this)
+    {
+        let name = ctx
+            .steam
+            .find_game(&app)
+            .map(|g| g.name)
+            .unwrap_or_else(|| app.clone());
+        for f in crate::fixes::load(paths, &app)
+            .fixes
+            .into_iter()
+            .filter(|f| !f.temporary && f.id != crate::fixes::YOUR_SETTINGS)
+        {
+            let ran = launches
+                .iter()
+                .filter(|l| l.app_id == app && l.started_at > f.applied_at && !l.running)
+                .any(|l| !l.failed && l.runtime_secs >= history::PLAYED as f64);
+            if f.verdict == Some(true) || (f.verdict.is_none() && ran) {
+                out.push((name.clone(), f.id));
+            }
+        }
+    }
+    out
 }
 
 pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights {
@@ -1321,6 +1475,31 @@ pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights
             (k > 0).then(|| crate::prefix::human_size(k))
         },
         has_prefix: ctx.steam.compatdata(game).is_some(),
+        find_cause: crate::triage::find_cause(&ev, &suggestions),
+        layers: ev
+            .layers
+            .iter()
+            .map(|l| LayerInfo {
+                name: l.name.clone(),
+                what: vklayers::friendly(l),
+                active: l.active,
+                trusted: l.trusted,
+            })
+            .collect(),
+        nvidia_report: suggestions
+            .iter()
+            .any(|s| s.id == "report_nvidia")
+            .then(|| {
+                crate::triage::nvidia_report(
+                    &ev,
+                    driver.as_deref(),
+                    gpu.as_deref(),
+                    &crate::triage::ruled_out(&ev, &suggestions),
+                )
+            }),
+        shader_cache_aside: crate::shadercache::has_aside(game),
+        progress: crate::progress::progress(&ev, ev.now()),
+        timeline: crate::progress::timeline(&ev, ev.now(), 10),
         summary,
         suggestions,
     }
@@ -1837,7 +2016,7 @@ mod tests {
         assert_eq!(sum.light, Light::Yellow);
         assert!(
             sum.what
-                .contains("You applied \"Try the game's Direct3D 12 mode\""),
+                .starts_with("Testing the fix: Start in Direct3D 12"),
             "{}",
             sum.what
         );

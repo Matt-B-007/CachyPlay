@@ -141,6 +141,14 @@ fn friendly(k: &str) -> String {
 
 const WRAPPERS: [&str; 2] = ["game-performance", crate::obs::TOOL];
 
+fn is_setting(tok: &str) -> bool {
+    tok.split_once('=').is_some_and(|(k, _)| {
+        !k.is_empty()
+            && k.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    })
+}
+
 /// Steam launch options that apply `settings` without CachyPlay, keeping the user's own options.
 /// `current` may contain CachyPlay's launch helper; it is removed.
 pub fn standalone_launch_options(
@@ -149,6 +157,35 @@ pub fn standalone_launch_options(
     have_game_performance: bool,
 ) -> String {
     let base = launch_options::strip(current);
+    // NAME=value after %command% does nothing (Steam passes it to the game as text). Move it in
+    // front, or drop it when it's already there.
+    let base = match base.split_once(COMMAND) {
+        Some((before, after)) if after.split_whitespace().any(is_setting) => {
+            let mut front: Vec<String> = before.split_whitespace().map(str::to_string).collect();
+            let mut rest: Vec<&str> = Vec::new();
+            for tok in after.split_whitespace() {
+                if is_setting(tok) {
+                    let name = tok.split('=').next().unwrap_or("");
+                    if !front.iter().any(|f| f.starts_with(&format!("{name}="))) {
+                        front.push(tok.to_string());
+                    }
+                } else {
+                    rest.push(tok);
+                }
+            }
+            let mut b = front.join(" ");
+            if !b.is_empty() {
+                b.push(' ');
+            }
+            b.push_str(COMMAND);
+            for r in rest {
+                b.push(' ');
+                b.push_str(r);
+            }
+            b
+        }
+        _ => base,
+    };
     let base = if base.trim().is_empty() {
         COMMAND.to_string()
     } else if base.contains(COMMAND) {
@@ -260,6 +297,18 @@ pub fn export_text(games: &[GameSettings]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn misplaced_settings_move_in_front_without_duplicates() {
+        // Halo, Nov 25: "PROTON_ENABLE_NVAPI=1 ... %command% PROTON_ENABLE_NVAPI=1".
+        let out = standalone_launch_options(
+            "%command% PROTON_ENABLE_NVAPI=1",
+            &[st("PROTON_ENABLE_NVAPI=1"), st("game-performance")],
+            true,
+        );
+        assert_eq!(out, "PROTON_ENABLE_NVAPI=1 game-performance %command%");
+        assert_eq!(out.matches("PROTON_ENABLE_NVAPI").count(), 1);
+    }
+
     use super::*;
 
     fn st(value: &str) -> Setting {

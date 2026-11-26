@@ -22,6 +22,9 @@ pub struct Manifest {
     pub files: Vec<PathBuf>,
 }
 
+/// The app's ID (tauri.conf.json "identifier"): the name Wayland knows the window by.
+pub const APP_ID: &str = "io.github.matt-b-007.cachyplay";
+
 pub fn desktop_entry(gui: &Path) -> String {
     format!(
         "[Desktop Entry]\nType=Application\nName=CachyPlay\nGenericName=Game Helper\nComment=One-click game tuning, crash help and bug reports\nExec={}\nIcon=cachyplay\nTerminal=false\nCategories=Game;Utility;\nKeywords=steam;proton;gaming;cachyos;\nStartupWMClass=cachyplay-gui\n",
@@ -52,11 +55,21 @@ pub fn install_user(paths: &Paths, from: &Path) -> Result<PathBuf> {
             copy_exe(&gui_src, &gui)?;
         }
         files.push(gui.clone());
-        let desktop = paths
-            .home
-            .join(".local/share/applications/cachyplay.desktop");
-        atomic_write(&desktop, desktop_entry(&gui).as_bytes())?;
-        files.push(desktop);
+        // Wayland desktops match a window to its menu entry by name, and that's where the title
+        // bar and taskbar icon come from. The window calls itself by the app's ID (or, on some
+        // setups, by its program name), so there's an entry for each; the second is hidden from
+        // the menu. The old "cachyplay.desktop" matched neither, which showed KDE's fallback "W".
+        let apps = paths.home.join(".local/share/applications");
+        let _ = fs::remove_file(apps.join("cachyplay.desktop"));
+        let main = apps.join(format!("{APP_ID}.desktop"));
+        atomic_write(&main, desktop_entry(&gui).as_bytes())?;
+        files.push(main);
+        let alias = apps.join(format!("{GUI_BIN}.desktop"));
+        atomic_write(
+            &alias,
+            format!("{}NoDisplay=true\n", desktop_entry(&gui)).as_bytes(),
+        )?;
+        files.push(alias);
     }
 
     write_json(
@@ -67,6 +80,39 @@ pub fn install_user(paths: &Paths, from: &Path) -> Result<PathBuf> {
         },
     )?;
     Ok(bin)
+}
+
+/// Bring an existing install's menu entries up to date (an update replaces the programs, not
+/// the entries). Only for the copy in ~/.local/bin, and only when something is out of date.
+pub fn refresh_menu_entries(paths: &Paths) -> bool {
+    let gui = paths.user_bin().with_file_name(GUI_BIN);
+    if !gui.is_file() {
+        return false;
+    }
+    let apps = paths.home.join(".local/share/applications");
+    let main = apps.join(format!("{APP_ID}.desktop"));
+    let alias = apps.join(format!("{GUI_BIN}.desktop"));
+    let old = apps.join("cachyplay.desktop");
+    let want = desktop_entry(&gui);
+    let current = fs::read_to_string(&main).unwrap_or_default();
+    if current == want && alias.exists() && !old.exists() {
+        return false;
+    }
+    let _ = fs::remove_file(&old);
+    let ok = atomic_write(&main, want.as_bytes()).is_ok()
+        && atomic_write(&alias, format!("{want}NoDisplay=true\n").as_bytes()).is_ok();
+    if ok {
+        if let Some(mut m) = read_json::<Manifest>(&paths.install_manifest()) {
+            m.files.retain(|f| f != &old);
+            for f in [&main, &alias] {
+                if !m.files.contains(f) {
+                    m.files.push(f.clone());
+                }
+            }
+            let _ = write_json(&paths.install_manifest(), &m);
+        }
+    }
+    ok
 }
 
 fn copy_exe(from: &Path, to: &Path) -> Result<()> {
@@ -129,10 +175,22 @@ mod tests {
         fs::write(dl.with_file_name(GUI_BIN), b"#!/bin/sh\n").unwrap();
         let bin = install_user(&paths, &dl).unwrap();
         assert!(d.path().join(".local/bin/cachyplay-gui").exists());
-        let desktop =
-            fs::read_to_string(d.path().join(".local/share/applications/cachyplay.desktop"))
-                .unwrap();
+        let desktop = fs::read_to_string(
+            d.path()
+                .join(".local/share/applications/io.github.matt-b-007.cachyplay.desktop"),
+        )
+        .unwrap();
         assert!(desktop.contains(".local/bin/cachyplay-gui"), "{desktop}");
+        let alias = fs::read_to_string(
+            d.path()
+                .join(".local/share/applications/cachyplay-gui.desktop"),
+        )
+        .unwrap();
+        assert!(alias.contains("NoDisplay=true") && alias.contains("Icon=cachyplay"));
+        assert!(!d
+            .path()
+            .join(".local/share/applications/cachyplay.desktop")
+            .exists());
         assert_eq!(bin, d.path().join(".local/bin/cachyplay"));
         assert!(crate::sys::is_executable(&bin));
         assert!(d

@@ -87,6 +87,8 @@ function times(n) {
 const LIGHT_TEXT = { green: "Runs fine", yellow: "Works with a fix", red: "Not working", grey: "Not played lately" };
 
 function statusText(g) {
+  if (g.waiting) return "Waiting for Steam to close";
+  if (g.stage && g.stage !== "Not working") return g.stage;
   if (g.light === "yellow") return g.gpu_crashes > 0 ? "Trying a fix" : "Works with a fix";
   if (g.gpu_crashes > 0) return `Crashed ${times(g.gpu_crashes)}`;
   if (g.light === "red") return "Not working";
@@ -101,10 +103,11 @@ function renderChrome() {
   const chip = $("steam-chip");
   if (o.steam) {
     chip.hidden = false;
-    chip.className = `steam-chip${o.steam.running ? " running" : ""}`;
+    const st = (state.live && state.live.steam) || o.steam.state || (o.steam.running ? "running" : "closed");
+    chip.className = `steam-chip${st !== "closed" ? " running" : ""}`;
     chip.replaceChildren(
       h("span", { class: "dot" }),
-      h("span", {}, o.steam.running ? "Steam is open" : "Steam is closed"),
+      h("span", {}, st === "running" ? "Steam is open" : st === "closing" ? "Steam is closing…" : "Steam is closed"),
       h("span", { class: "who" }, o.steam.persona || `account ${o.steam.account_id}`)
     );
   } else {
@@ -126,8 +129,10 @@ function banners() {
     out.push(h("div", { class: "banner bad" },
       h("p", {}, h("strong", {}, "Steam wasn't found"), o.steam_error || "Install Steam and log in once.")));
   } else if (o.steam.blocked_reason) {
+    const waiting = (state.live && state.live.waiting) || [];
     out.push(h("div", { class: `banner ${o.steam.kind === "flatpak" ? "bad" : "warn"}` },
-      h("p", {}, h("strong", {}, o.steam.kind === "flatpak" ? "Flatpak Steam" : o.steam.running ? "Steam is open" : "Read-only for now"), o.steam.blocked_reason)));
+      h("p", {}, h("strong", {}, o.steam.kind === "flatpak" ? "Flatpak Steam" : o.steam.running ? (waiting.length ? `${waiting.length === 1 ? "1 change is" : waiting.length + " changes are"} waiting for Steam to close` : "Steam is open") : "Read-only for now"), o.steam.blocked_reason),
+      o.steam.can_queue ? h("button", { class: waiting.length ? "primary" : "secondary", onclick: closeSteam }, "Close Steam for me") : null));
   }
   const problems = (state.pcCheck || []).filter((c) => c.level === "bad");
   if (problems.length) {
@@ -253,6 +258,15 @@ function suggestionsFor(appId) {
   return i ? i.suggestions : undefined;
 }
 
+const STAGE_LABEL = { not_working: "Not working", testing: "Testing a fix", seems_to_work: "Seems to work", works_with_fix: "Works with a fix", runs_fine: "Runs fine" };
+
+function stageLabel(d) {
+  const p = insightsFor(d.summary.app_id)?.progress;
+  if (!p) return null;
+  if (p.stage === "testing" && p.playing_secs != null) return "Playing now";
+  return STAGE_LABEL[p.stage] || null;
+}
+
 const LIGHT_LABEL = { green: "Runs fine", yellow: "Works with a fix", red: "Not working", grey: "Not played lately" };
 
 /* The three lines at the top of a game (what happened, why, what to do) and one main button. */
@@ -274,23 +288,32 @@ function hero(d) {
       sum.todo ? h("p", { class: "todo" }, h("span", { class: "todo-label" }, "What to do: "), sum.todo) : null,
     ];
   }
+  if (s.removed_in_steam && !s.waiting) {
+    lines.unshift(h("div", { class: "note put-back" },
+      h("p", {}, h("strong", {}, "CachyPlay was removed from this game's launch options in Steam. "),
+        "Editing launch options in Steam replaces the whole line, including CachyPlay's part. Put it back and keep your new options? Tip: use \"Try these settings\" on the Settings tab instead, so Steam's launch options never change."),
+      h("div", { class: "actions" }, h("button", { class: "primary", disabled: notInstalled || (blocked && !canQueueNow()), onclick: () => setEnabled(s.app_id, true) }, canQueueNow() ? "Put CachyPlay back when Steam closes" : "Put CachyPlay back"))));
+  }
   let primary = null;
   if (sum && sum.fix_id) {
     primary = h("button", { class: "primary big", disabled: state.busy, onclick: (e) => fixIt(s.app_id, e.currentTarget) }, "Fix it");
   } else if (!s.enabled && light !== "red") {
-    primary = h("button", { class: "primary big", disabled: !!blocked || notInstalled, title: blocked || "", onclick: () => setEnabled(s.app_id, true) }, "Turn on CachyPlay");
+    primary = h("button", { class: "primary big", disabled: (!!blocked && !canQueueNow()) || notInstalled || !!s.waiting, title: blocked || "", onclick: () => setEnabled(s.app_id, true) }, s.waiting ? "Turns on when Steam closes" : canQueueNow() ? "Turn on when Steam closes" : "Turn on CachyPlay");
   }
   const rating = state.protondb.get(s.app_id);
 
-  const canToggle = !blocked && !(notInstalled && !s.enabled);
-  const switchNote = blocked ? "Close Steam to change" : notInstalled && !s.enabled ? "Install CachyPlay first" : s.enabled ? "On for this game" : "Off for this game";
+  const canQueue = !!(blocked && state.overview.steam && state.overview.steam.can_queue);
+  const canToggle = (!blocked || canQueue) && !(notInstalled && !s.enabled);
+  const switchNote = s.waiting ? s.waiting.replace(/ for .*$/, "") + " when Steam closes"
+    : canQueue ? (s.enabled ? "On · changes wait for Steam to close" : "Off · turning on waits for Steam to close")
+    : blocked ? "Close Steam to change" : notInstalled && !s.enabled ? "Install CachyPlay first" : s.enabled ? "On for this game" : "Off for this game";
 
   return h("section", { class: "hero" },
     h("div", { class: "hero-cover" }, h("span", {}, s.name.slice(0, 2).toUpperCase())),
     h("div", { class: "hero-text" },
       h("div", { class: "hero-title" },
         h("h1", {}, s.name),
-        h("span", { class: `light-chip ${light}` }, h("span", { class: `light ${light}` }), LIGHT_LABEL[light]),
+        h("span", { class: `light-chip ${light}` }, h("span", { class: `light ${light}` }), stageLabel(d) || LIGHT_LABEL[light]),
         rating ? h("button", { class: `protondb ${rating.tier}`, title: `${rating.meaning} (${rating.reports} reports on ProtonDB)`, onclick: () => openUrl(rating.url) }, `ProtonDB: ${rating.tier}`) : null),
       ...lines,
       h("div", { class: "hero-actions" },
@@ -305,8 +328,9 @@ function hero(d) {
         "aria-checked": s.enabled ? "true" : "false",
         "aria-label": `CachyPlay for ${s.name}`,
         disabled: !canToggle || state.busy,
-        onclick: () => setEnabled(s.app_id, !s.enabled),
-      })));
+        onclick: () => setEnabled(s.app_id, s.waiting ? s.waiting.startsWith("Turn CachyPlay off") : !s.enabled),
+      }),
+      s.waiting ? h("button", { class: "link small", onclick: () => cancelWaiting(s.app_id) }, "Cancel") : null));
 }
 
 const TABS = [["overview", "Overview"], ["fixes", "Fixes"], ["settings", "Settings"], ["history", "History"]];
@@ -423,6 +447,90 @@ function compareCard(ins) {
         h("tr", {}, h("th", {}, "Launch options"), ...rows.map((r, i) => h("td", { class: i === 0 ? "this" : "" }, h("code", {}, opts(r.launch_options))))))));
 }
 
+const STAGE_CLASS = { not_working: "bad", testing: "warn", seems_to_work: "warn", works_with_fix: "good", runs_fine: "good", unknown: "muted" };
+
+function progressCard(d, p) {
+  const steps = [["testing", "Testing the fix"], ["seems_to_work", "Seems to work"], ["works_with_fix", "Works with a fix"]];
+  const at = steps.findIndex((x) => x[0] === p.stage);
+  return card("progress",
+    h("h2", { class: "card-title " + (STAGE_CLASS[p.stage] || "") }, p.headline),
+    p.detail ? h("p", {}, p.detail) : null,
+    p.fix_label && at >= 0
+      ? h("ol", { class: "steps", "aria-label": "Status steps" }, steps.map((x, i) => h("li", { class: i < at ? "done" : i === at ? "now" : "" }, x[1])))
+      : null,
+    h("p", { class: "muted" }, "A clean run is " + p.needed_text + (p.online_only ? ", online." : ".")),
+    h("label", { class: "check" },
+      h("input", { type: "checkbox", checked: p.online_only, onchange: (e) => setOnlineOnly(d.summary.app_id, e.target.checked) }),
+      " The problem only happens online (only online starts count)"));
+}
+
+function eventRow(it) {
+  return h("li", { class: "tl-event tl-" + it.what }, h("span", { class: "when" }, when(it.at)), h("span", {}, it.text));
+}
+
+const NOTE_CHOICES = [["fine", "Ran fine"], ["stutter", "Stutter"], ["glitches", "Graphics glitches"], ["crash", "Crashed to desktop"], ["network", "Network lag"]];
+
+function runRow(d, r, items, ins) {
+  const newestEnded = items.find((x) => x.kind === "run" && !x.running);
+  const ask = !r.running && (r === newestEnded && !(r.note && r.note.kind) || (ins.progress && ins.progress.ask_online === r.start));
+  const cls = { crash: "bad", problem: "bad", didnt_start: "bad", short: "warn", running: "warn", fine: "good" }[r.outcome] || "muted";
+  const chips = [
+    r.tool ? h("span", { class: "chip" }, r.tool.replace(/-x86_64$/, "")) : null,
+    r.through_cachyplay
+      ? (r.applied.length ? h("span", { class: "chip" }, "With: " + r.applied.map((a) => a.replace(/^Fix: /, "").split(":")[0]).join(", ")) : h("span", { class: "chip" }, "CachyPlay on"))
+      : h("span", { class: "chip muted" }, "CachyPlay off"),
+    r.gpu ? h("span", { class: "chip" + (r.gpu_integrated ? " warn" : "") }, "On " + r.gpu.replace(/^the /, "")) : null,
+    r.counts ? h("span", { class: "chip " + (r.counts.startsWith("✓") ? "good" : "muted") }, r.counts) : null,
+    r.note && r.note.kind ? h("span", { class: "chip" }, NOTE_CHOICES.find((c) => c[0] === r.note.kind)[1] + (r.note.online === true ? " · online" : r.note.online === false ? " · offline" : "")) : null,
+  ];
+  const details = h("div", { class: "tl-details", hidden: true },
+    r.crash_detail ? h("p", {}, r.crash_detail) : null,
+    h("p", { class: "muted" }, [
+      r.secs != null ? "Ran " + duration(r.secs) : null,
+      r.exit_code != null ? "exit code " + r.exit_code : null,
+      r.applied.length ? "CachyPlay applied: " + r.applied.join("; ") : null,
+    ].filter(Boolean).join(" · ")));
+  return h("li", { class: "tl-run" },
+    h("button", { class: "tl-head", "aria-expanded": "false", onclick: (e) => { const b = e.currentTarget; const open = b.getAttribute("aria-expanded") !== "true"; b.setAttribute("aria-expanded", String(open)); details.hidden = !open; } },
+      h("span", { class: "when" }, when(r.start)),
+      h("span", { class: cls }, r.text)),
+    h("div", { class: "chips" }, chips),
+    details,
+    ask ? noteAsk(d, r, ins) : null);
+}
+
+function noteAsk(d, r, ins) {
+  const onlineOnly = ins.progress && ins.progress.online_only;
+  const kind = r.note && r.note.kind;
+  return h("div", { class: "note-ask" },
+    !kind ? h("span", { class: "muted" }, "What happened?") : null,
+    !kind ? h("div", { class: "actions" }, NOTE_CHOICES.map(([k, label]) => h("button", { class: "secondary small", onclick: () => setRunNote(d.summary.app_id, r.start, k, null) }, label))) : null,
+    (r.note && r.note.online != null) ? null : h("div", { class: "actions" },
+      h("span", { class: "muted" }, onlineOnly ? "Was that online? (only online starts count)" : "Online or offline?"),
+      h("button", { class: "secondary small", onclick: () => setRunNote(d.summary.app_id, r.start, "", true) }, "Online"),
+      h("button", { class: "secondary small", onclick: () => setRunNote(d.summary.app_id, r.start, "", false) }, "Offline")));
+}
+
+async function setRunNote(appId, start, kind, online) {
+  try {
+    await invoke("set_run_note", { appId, start, kind, online });
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
+async function setOnlineOnly(appId, on) {
+  try {
+    await invoke("set_online_only", { appId, on });
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
 function launchRow(l) {
   return h("li", {},
     h("span", { class: "when" }, when(l.started_at)),
@@ -437,16 +545,17 @@ const FIX_STATUS = {
   new: ["Suggested", ""],
   applied: ["Applied", "Start the game from Steam to try it."],
   worked: ["Worked", "The game has run normally since you applied this."],
-  didnt_help: ["Didn't help", "The game crashed again after this. Try the next suggestion, or undo it."],
+  didnt_help: ["Ruled out", "The game crashed again with this. Try the next suggestion, or undo it."],
 };
 
-const CONFIDENCE = { likely: "Likely", possible: "Possible", unsure: "Not sure yet" };
+const CONFIDENCE = { likely: "Likely", possible: "Possible", unsure: "Long shot" };
 
 function suggestionBody(appId, s) {
   const ins = insightsFor(appId);
   const out = [
     h("div", { class: "s-title" }, h("h2", {}, s.title), h("span", { class: `confidence ${s.confidence}`, title: "How sure CachyPlay is" }, CONFIDENCE[s.confidence])),
     h("ul", { class: "why" }, s.why.map((w) => h("li", {}, w))),
+    s.proof ? h("p", { class: "proof" }, h("strong", {}, "What would prove it: "), s.proof) : null,
   ];
   // Only fixes CachyPlay applied have a "worked / didn't help" story to tell.
   if (s.status !== "new" && (s.fix || s.switched)) out.push(h("p", { class: `s-note ${s.status}` }, FIX_STATUS[s.status][1]));
@@ -455,9 +564,14 @@ function suggestionBody(appId, s) {
     const blocked = editBlocked();
     out.push(h("div", { class: "actions" },
       s.switched
-        ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => compatAction("undo_compat_tool", { appId }) }, "Undo")
-        : h("button", { class: "primary", disabled: !!blocked, title: blocked || "", onclick: () => compatAction("switch_compat_tool", { appId, name: s.switch_tool.name }) }, `Switch to ${s.switch_tool.display}`),
-      blocked ? h("span", { class: "muted" }, "Close Steam first.") : null));
+        ? h("button", { class: "secondary", disabled: !!blocked && !canQueueNow(), title: blocked || "", onclick: () => compatAction("undo_compat_tool", { appId }) }, canQueueNow() ? "Undo when Steam closes" : "Undo")
+        : h("button", { class: "primary", disabled: !!blocked && !canQueueNow(), title: blocked || "", onclick: () => compatAction("switch_compat_tool", { appId, name: s.switch_tool.name }) }, canQueueNow() ? `Switch to ${s.switch_tool.display} when Steam closes` : `Switch to ${s.switch_tool.display}`),
+      blocked && !canQueueNow() ? h("span", { class: "muted" }, "Close Steam first.") : null));
+  }
+  if (s.action === "reset_shader_cache") {
+    out.push(h("div", { class: "actions" }, s.status !== "new" || (ins && ins.shader_cache_aside)
+      ? h("button", { class: "secondary", onclick: () => simpleAction("undo_shader_cache", appId) }, "Undo (put the old cache back)")
+      : h("button", { class: "primary", onclick: () => confirmDialog("Start the shader cache fresh?", "The current cache is moved aside, not deleted. Close the game first. The first start afterwards stutters a little while shaders rebuild.", "Reset cache").then((ok) => ok && simpleAction("reset_shader_cache", appId)) }, "Reset shader cache")));
   }
   if (s.fix) {
     const tech = [...Object.entries(s.fix.env).map(([k, v]) => `${k}=${v}`), ...s.fix.args].join(" ");
@@ -479,15 +593,75 @@ function fixesTab(d) {
     return [card("calm", h("h2", {}, "Nothing to fix right now"),
       h("p", { class: "muted" }, "CachyPlay found no crashes or problems for this game."))];
   }
+  const ins = insightsFor(d.summary.app_id);
   return [
-    h("p", { class: "muted intro" }, "Worked out on your PC from crashes, logs and how your other games run, most likely first. Every fix can be undone."),
+    ins && ins.find_cause && ins.find_cause.steps.length ? findCauseCard(ins.find_cause) : null,
+    h("p", { class: "muted intro" }, "Worked out on your PC from crashes, logs and how your other games run, most likely first. Every fix can be undone. Labels: Likely (two or more clues agree), Possible (one clue), Long shot (a general fix)."),
     h("ol", { class: "fix-list" }, list.map((s, i) => h("li", {},
-      card(i === 0 && s.status === "new" ? "recommended" : "",
+      card((i === 0 && s.status === "new" ? "recommended " : "") + (s.big_step ? "big-step" : ""),
         h("div", { class: "fix-head" },
           h("span", { class: "num" }, String(i + 1)),
+          s.big_step ? h("span", { class: "pill big" }, "Big step") : null,
           s.status !== "new" ? h("span", { class: `pill ${s.status}` }, FIX_STATUS[s.status][0]) : null),
         ...suggestionBody(d.summary.app_id, s))))),
   ];
+}
+
+const STEP_LABEL = { ruled_out: "Ruled out", helped: "Helped", testing: "Testing", next: "Next", todo: "" };
+
+function findCauseCard(fc) {
+  return card("find-cause",
+    h("h2", { class: "card-title" }, "Find the cause"),
+    h("p", {}, fc.summary),
+    h("ol", { class: "ladder" }, fc.steps.map((st) => h("li", { class: "ladder-" + st.status },
+      h("span", { class: "ladder-tag" }, STEP_LABEL[st.status]),
+      h("span", {}, st.title)))),
+    h("p", { class: "muted" }, "One change per start. Each result is recorded, and anything that crashes anyway is crossed off, including things you try in Steam's launch options."));
+}
+
+async function simpleAction(cmd, appId) {
+  try {
+    toast(await invoke(cmd, { appId }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
+function addonsCard(d) {
+  const ins = insightsFor(d.summary.app_id);
+  const extra = ((ins && ins.layers) || []).filter((l) => !l.trusted);
+  if (!extra.length) return null;
+  return card("addons",
+    h("h2", { class: "card-title" }, "Vulkan add-ons on this PC"),
+    h("p", { class: "muted" }, "Extra programs that can load into games. Only active ones affect games; \"Vulkan add-ons off\" is only offered when one is active."),
+    h("ul", { class: "rows" }, extra.map((l) => h("li", {},
+      h("span", {}, h("strong", {}, l.name), " ", h("span", { class: "muted" }, l.what)),
+      h("span", { class: l.active ? "warn" : "muted" }, l.active ? "Active: loads into every game" : "Installed, not active")))));
+}
+
+function yourSettingsCard(d) {
+  const s = d.summary;
+  const input = h("input", { type: "text", class: "settings-input", value: d.your_settings || "", placeholder: "VKD3D_CONFIG=no_upload_hvv -force-d3d12", "aria-label": `Settings to try for ${s.name}`, spellcheck: "false" });
+  const save = async () => {
+    try {
+      toast(await invoke("set_your_settings", { appId: s.app_id, text: input.value }), "success");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+    state.insights.delete(s.app_id);
+    input.blur();
+    await load();
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
+  return card("your-settings",
+    h("h2", { class: "card-title" }, "Try these settings"),
+    h("p", { class: "muted" }, "Settings (NAME=value) and game options (like -force-d3d12) to test, without touching Steam's launch options. They work with Steam open, and CachyPlay counts each try toward the status steps. Leave out %command%."),
+    h("div", { class: "settings-row" }, input,
+      h("button", { class: "primary", onclick: save }, "Save"),
+      d.your_settings ? h("button", { class: "secondary", onclick: () => { input.value = ""; save(); } }, "Remove") : null),
+    !s.enabled ? h("p", { class: "s-note warn" }, "CachyPlay is off for this game, so these aren't used until it's on.") : null);
 }
 
 function settingsTab(d) {
@@ -500,7 +674,7 @@ function settingsTab(d) {
     h("tr", { class: `sub ${c.status}` },
       h("td", { colspan: "3" }, h("p", {}, c.why), c.technical ? h("code", {}, c.technical) : null)),
   ]);
-  const out = [card("",
+  const out = [yourSettingsCard(d), addonsCard(d), card("",
     h("h2", { class: "card-title" }, s.enabled ? "What CachyPlay changes" : "What CachyPlay would change"),
     h("table", { class: "changes" },
       h("thead", {}, h("tr", {}, h("th", {}, "Setting"), h("th", {}, "Stock"), h("th", {}, "CachyPlay"))),
@@ -516,6 +690,7 @@ function settingsTab(d) {
     out.push(card("keep",
       h("h2", { class: "card-title" }, "Keep these settings without CachyPlay"),
       h("p", { class: "muted" }, "Paste this into the game's Launch options in Steam. Uninstalling with \"Keep the settings\" does this for you."),
+      d.summary.enabled ? h("p", { class: "s-note warn" }, "Pasting this replaces CachyPlay's part of the launch options, so CachyPlay turns off for this game. To test settings and keep CachyPlay on, use \"Try these settings\" above.") : null,
       h("code", { class: "kept-line" }, d.standalone_launch_options),
       h("div", { class: "actions" }, h("button", { class: "secondary", onclick: () => copyText(d.standalone_launch_options) }, "Copy"))));
   }
@@ -544,7 +719,7 @@ function prefixCard(d) {
     h("h2", { class: "card-title" }, "Reset the game's Windows files"),
     h("p", { class: "muted" }, "Proton keeps a small Windows setup for each game. If it gets damaged, the game can crash at start no matter what else you change. Resetting sets it aside (nothing is deleted) and Steam builds a fresh one next time. Saves kept there come back with Undo; most games also keep saves in Steam Cloud."),
     h("div", { class: "actions" },
-      ins.has_prefix ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("reset_prefix", d.summary.app_id, d.summary.name) }, "Reset Windows files") : null,
+      ins.has_prefix ? h("button", { class: "secondary", disabled: !!blocked && !canQueueNow(), title: blocked || "", onclick: () => prefixAction("reset_prefix", d.summary.app_id, d.summary.name) }, canQueueNow() ? "Reset when Steam closes" : "Reset Windows files") : null,
       ins.kept_prefixes ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("undo_prefix_reset", d.summary.app_id, d.summary.name) }, "Undo reset") : null,
       ins.kept_prefixes ? h("button", { class: "secondary", disabled: !!blocked, title: blocked || "", onclick: () => prefixAction("delete_kept_prefixes", d.summary.app_id, d.summary.name, ins.kept_size) }, ins.kept_size ? `Delete old copies (${ins.kept_size})` : "Delete old copies") : null,
       blocked ? h("span", { class: "muted" }, "Close Steam first.") : null));
@@ -625,18 +800,28 @@ function obsCard(d) {
 
 function historyTab(d) {
   const ins = insightsFor(d.summary.app_id);
-  const out = [
-    card("",
+  const out = [];
+  if (ins && ins.progress) out.push(progressCard(d, ins.progress));
+  const items = (ins && ins.timeline) || [];
+  out.push(card("starts",
+    h("h2", { class: "card-title" }, "Recent starts"),
+    items.length
+      ? h("ol", { class: "timeline" }, items.map((it, i) => it.kind === "run" ? runRow(d, it, items, ins) : eventRow(it)))
+      : h("p", { class: "muted" }, "No starts in Steam's log yet. Start the game from Steam and it shows up here.")));
+  if (!items.some((it) => it.kind === "run" && it.outcome === "crash") && d.crashes.length) {
+    out.push(card("",
       h("h2", { class: "card-title" }, "Graphics driver crashes"),
-      d.crashes.length
-        ? h("ul", { class: "rows" }, d.crashes.map((c) => h("li", {}, h("span", { class: "when" }, c.when), h("span", {}, c.what))))
-        : h("p", { class: "muted" }, "None in the last 30 days.")),
-    card("",
-      h("h2", { class: "card-title" }, "Starts through CachyPlay"),
-      d.launches.length
-        ? h("ul", { class: "rows" }, d.launches.map(launchRow))
-        : h("p", { class: "muted" }, d.summary.enabled ? "Start the game from Steam and it shows up here." : "Starts are recorded once CachyPlay is on.")),
-  ];
+      h("ul", { class: "rows" }, d.crashes.map((c) => h("li", {}, h("span", { class: "when" }, c.when), h("span", {}, c.what))))));
+  }
+  if (ins && ins.nvidia_report) {
+    out.push(card("nvidia",
+      h("h2", { class: "card-title" }, "Tell NVIDIA"),
+      h("p", { class: "muted" }, "The same driver error keeps happening. Run sudo nvidia-bug-report.sh in a terminal, then post this on NVIDIA's Linux forum with nvidia-bug-report.log.gz and a CachyPlay bug report attached."),
+      h("pre", { class: "dev-text" }, ins.nvidia_report),
+      h("div", { class: "actions" },
+        h("button", { class: "primary", onclick: () => copyText(ins.nvidia_report, "Copied. Paste it into your post.") }, "Copy text"),
+        h("button", { class: "secondary", onclick: () => openUrl("https://forums.developer.nvidia.com/c/gpu-graphics/linux/148") }, "Open NVIDIA's Linux forum"))));
+  }
   if (ins && ins.developer_report) {
     out.push(card("dev",
       h("h2", { class: "card-title" }, "Tell the developer"),
@@ -679,7 +864,12 @@ async function applyFix(appId, id, btn) {
 
 async function compatAction(cmd, args) {
   try {
-    toast(await invoke(cmd, args), "success");
+    if (canQueueNow()) {
+      const action = cmd === "undo_compat_tool" ? { action: "undo_tool", app_id: args.appId } : { action: "switch_tool", app_id: args.appId, tool: args.name };
+      toast(await invoke("queue_action", { action }), "success", { label: "Close Steam for me", run: closeSteam });
+    } else {
+      toast(await invoke(cmd, args), "success");
+    }
   } catch (e) {
     toast(String(e), "error");
   }
@@ -735,7 +925,11 @@ async function prefixAction(cmd, appId, name, size) {
     if (!ok) return;
   }
   try {
-    toast(await invoke(cmd, { appId }), "success");
+    if (cmd === "reset_prefix" && canQueueNow()) {
+      toast(await invoke("queue_action", { action: { action: "reset_prefix", app_id: appId } }), "success", { label: "Close Steam for me", run: closeSteam });
+    } else {
+      toast(await invoke(cmd, { appId }), "success");
+    }
   } catch (e) {
     toast(String(e), "error");
   }
@@ -751,9 +945,18 @@ async function openUrl(url) {
   }
 }
 
+function canQueueNow() {
+  const st = state.overview && state.overview.steam;
+  return !!(st && st.can_queue && st.blocked_reason);
+}
+
 async function setEnabled(appId, on) {
   state.busy = true;
   try {
+    if (canQueueNow()) {
+      toast(await invoke("queue_action", { action: { action: on ? "enable" : "disable", app_id: appId } }), "success", { label: "Close Steam for me", run: closeSteam });
+      return;
+    }
     toast(await invoke("set_enabled", { appId, enabled: on }), "success");
   } catch (e) {
     toast(String(e), "error");
@@ -762,6 +965,68 @@ async function setEnabled(appId, on) {
     await load();
   }
 }
+
+async function cancelWaiting(appId) {
+  try {
+    await invoke("cancel_waiting", { appId });
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  await load();
+}
+
+async function closeSteam() {
+  try {
+    toast(await invoke("close_steam"));
+  } catch (e) {
+    toast(String(e), "error");
+  }
+}
+
+async function openSteam() {
+  try {
+    toast(await invoke("open_steam"));
+  } catch (e) {
+    toast(String(e), "error");
+  }
+}
+
+/* ---------- staying up to date ---------- */
+state.live = null;
+state.lastLoad = Date.now();
+async function poll() {
+  let l;
+  try {
+    l = await invoke("live_status");
+  } catch {
+    return;
+  }
+  const prev = state.live;
+  state.live = l;
+  if (!prev) return;
+  // Don't redraw under someone who's typing or has a dialog open.
+  const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+  const dialog = document.querySelector("dialog[open]");
+  if (prev.steam !== "closed" && l.steam === "closed" && l.waiting.length) {
+    try {
+      const lines = await invoke("run_waiting");
+      lines.forEach((x) => toast(x, x.startsWith("Done") ? "success" : "error"));
+      toast("Steam is closed and your changes are in.", "success", { label: "Open Steam", run: openSteam });
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
+  const playing = state.insights.get(state.selected)?.progress?.playing_secs != null;
+  const changed = prev.steam !== l.steam || prev.token !== l.token || (playing && Date.now() - state.lastLoad > 60000);
+  if (changed && !typing && !dialog && !state.busy) {
+    state.insights.delete(state.selected);
+    state.lastLoad = Date.now();
+    await load();
+  } else if (prev.steam !== l.steam) {
+    renderChrome();
+  }
+}
+setInterval(poll, 3000);
 
 async function saveReport(appId) {
   const progress = toast("Saving bug report…");

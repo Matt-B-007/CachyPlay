@@ -97,6 +97,9 @@ struct UndoRecord {
     previous: Option<String>,
     /// What CachyPlay set.
     set: String,
+    /// When (RFC 3339), so the status steps know which starts came after the switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<String>,
 }
 
 fn undo_path(ctx: &Ctx, app_id: &str) -> PathBuf {
@@ -142,14 +145,24 @@ pub fn switch(ctx: &Ctx, app_id: &str, tool: &Tool) -> Result<()> {
     let mut rec: UndoRecord = read_json(&p).unwrap_or(UndoRecord {
         previous,
         set: String::new(),
+        at: None,
     });
     rec.set = tool.name.clone();
+    rec.at = Some(chrono::Local::now().to_rfc3339());
     write_json(&p, &rec)
 }
 
 /// The tool CachyPlay switched this game to, if it did.
 pub fn switched_to(ctx: &Ctx, app_id: &str) -> Option<String> {
     read_json::<UndoRecord>(&undo_path(ctx, app_id)).map(|r| r.set)
+}
+
+/// When CachyPlay switched the tool (wall-clock time), if it recorded it.
+pub fn switched_at(ctx: &Ctx, app_id: &str) -> Option<chrono::NaiveDateTime> {
+    let r: UndoRecord = read_json(&undo_path(ctx, app_id))?;
+    chrono::DateTime::parse_from_rfc3339(r.at.as_deref()?)
+        .ok()
+        .map(|d| d.naive_local())
 }
 
 /// Put the game back on the tool it used before CachyPlay changed it.

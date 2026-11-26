@@ -31,16 +31,19 @@ Installer options: `--beta`, `--from-source`, `--no-launch`. The desktop app nee
 
 ## Use
 
-Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix, red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. After you play, CachyPlay asks "Did it work?", and your answer decides what it suggests next.
+Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix (or a fix is being tested), red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. The page updates by itself while it's open: when a game starts, ends or crashes, and when Steam opens or closes.
 
-- **Fixes** lists every suggestion, most likely first, each with Undo.
-- **Settings** (per game) shows exactly what CachyPlay changes, **Use the graphics card** (on PCs that also have a chip built into the processor or motherboard), OBS game capture, the line to keep your settings without CachyPlay, and **Reset the game's Windows files** (plus deleting the old copies once you don't need Undo).
-- **History** lists crashes (remembered for 30 days, across restarts) and starts (with the graphics chip each one used), and has **Tell the developer**: a short report to post in the game's Steam discussions.
+After a fix, a game moves through **Testing the fix → Seems to work → Works with a fix**, with the fix named. A clean run is twice as long as the game used to last before crashing (at least 10 minutes, at most an hour), and "Works with a fix" needs 3 clean runs, or 2 adding up to an hour. A new crash after the fix sends it back to red; crashes from before the fix no longer count. Every start counts, even with CachyPlay off.
+
+- **Fixes** starts with **Find the cause**: the tests in order, with what's already ruled out (including settings you tried in Steam's launch options). Each suggestion says how sure CachyPlay is (**Likely**, **Possible** or **Long shot**), why, and what would prove it. Bigger changes, like going back to an older driver, are marked **Big step**, shown last and never done automatically.
+- **Settings** (per game) starts with **Try these settings**: type settings like `VKD3D_CONFIG=no_upload_hvv` or game options like `-force-d3d12`, and CachyPlay uses them at the next start without touching Steam's launch options (so it works with Steam open and CachyPlay stays on). It also shows which Vulkan add-ons are installed and which are actually active, exactly what CachyPlay changes, **Use the graphics card** (on PCs that also have a chip built into the processor or motherboard), OBS game capture, the line to keep your settings without CachyPlay, and **Reset the game's Windows files** (plus deleting the old copies once you don't need Undo).
+- **History** shows the status steps and the recent starts as a timeline: plain outcomes ("Graphics crash after 4 min", "Ran fine · 45 min", "Didn't start"), what was on for each start (fixes, Proton version, graphics chip, whether CachyPlay was on), clean-run progress, and dividers for fixes, Proton switches, driver and game updates. After a start, **What happened?** asks: ran fine, stutter, graphics glitches, crashed, or network lag, and online or offline. It has **Tell the developer**, and **Tell NVIDIA** when the same driver error keeps happening.
+- **Steam open?** Fixes and your settings work right away. Turning CachyPlay on or off, switching Proton and resetting Windows files wait and happen the moment Steam closes; **Close Steam for me** does it in one click and offers to reopen Steam. If you replace CachyPlay's part of the launch options in Steam, the game page offers **Put CachyPlay back** (keeping your new options).
 - When a game is broken, a card compares it with games that run fine on your PC.
 
 The gear icon opens Settings: updates, a **PC check** for common Linux gaming problems, light/dark theme (it follows your desktop, and is dark when the desktop doesn't say), big-screen mode for the TV with controller support, optional ProtonDB ratings, and uninstall. Problems the PC check finds also show as a banner.
 
-From a terminal: `cachyplay doctor` (PC check and self-test), `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo | --delete-kept]`, `cachyplay card <appid> on|off`, `cachyplay report <appid>`.
+From a terminal: `cachyplay doctor` (PC check and self-test), `cachyplay try <appid> "SETTINGS"`, `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo | --delete-kept]`, `cachyplay card <appid> on|off`, `cachyplay report <appid>`.
 
 Need help? See [SUPPORT.md](SUPPORT.md). Making a release? See [RELEASING.md](RELEASING.md).
 
@@ -78,6 +81,8 @@ When a game crashes, CachyPlay works out what to try, on your PC, with no AI and
 - whether **several different games** are crashing (a driver or system problem) or only one (a game problem)
 - Vulkan add-ons that load into every game (frame generation, upscalers, overlays)
 - recent driver upgrades, when the game last updated, and the game's own logs (Proton, Unity)
+
+It also remembers what's been tried, including settings you put in Steam's launch options yourself (Steam's log records them), and crosses off anything that crashed anyway. While a game runs, CachyPlay records the graphics card's temperature, power and clock speeds every 2 seconds, so a bug report can say whether the card was overheating or simply waiting on stuck work.
 
 Each suggestion lists the evidence behind it. Fixes for one game (such as turning off Vulkan add-ons for that game, or starting it in a window) are one click and can be undone. System-wide steps (rolling back a driver, resetting GPU clocks) are explained, never done automatically. After you play again, the suggestion shows whether it worked.
 
@@ -143,6 +148,10 @@ Still to check once per release on a real PC:
 2. **Use the graphics card** (PCs with a built-in chip too). Start a game, then check its History tab: the start should say "On NVIDIA graphics card" (or AMD). This checks that the settings pass through Steam's runtime and that CachyPlay can see which chip the game opened.
 3. **Steam keeps the edit.** Apply with Steam closed, open Steam, and confirm the launch options in the game's Properties match.
 4. **Update and Switch to Stable now** work from the app with the new release.
+5. **Window icon.** After updating, the title bar and taskbar show the CachyPlay icon, not KDE's white "W".
+6. **Close Steam for me** quits Steam, the waiting change happens, and **Open Steam** starts it again.
+7. **Try these settings** reach the game: set `DXVK_HUD=fps` for a DirectX 11 game and check the counter appears.
+8. **The GPU log** appears in a bug report after a start (NVIDIA through `nvidia-smi`; AMD through the kernel's sensor files).
 
 ## Build from source
 

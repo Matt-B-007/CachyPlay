@@ -38,6 +38,11 @@ pub struct SteamInfo {
     pub persona: String,
     /// Why games can't be changed right now, in plain English (None = editable).
     pub blocked_reason: Option<String>,
+    /// "running", "closing" (helpers still finishing) or "closed".
+    pub state: crate::live::SteamState,
+    /// Changes can wait for Steam to close (true while Steam is open, false for Flatpak or an
+    /// unknown settings format).
+    pub can_queue: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,6 +61,12 @@ pub struct GameSummary {
     /// Traffic light for the game list: green runs fine, yellow works with a fix, red broken,
     /// grey not played lately.
     pub light: crate::advice::Light,
+    /// CachyPlay was on, and its part of the launch options was replaced in Steam.
+    pub removed_in_steam: bool,
+    /// A change waiting for Steam to close ("Turn CachyPlay on for Halo Infinite").
+    pub waiting: Option<String>,
+    /// Status words for the list: "Testing a fix", "Seems to work", "Works with a fix"…
+    pub stage: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,6 +142,8 @@ pub struct GameDetail {
     pub obs: crate::obs::ObsInfo,
     /// "Use the graphics card", on PCs with a card and a built-in chip (None otherwise).
     pub graphics_card: Option<CardInfo>,
+    /// "Try these settings" for this game, as typed.
+    pub your_settings: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,12 +177,15 @@ pub fn steam_info(ctx: &Ctx) -> SteamInfo {
         Some(why)
     } else if running {
         Some(
-            "Close Steam to turn games on or off. Steam rewrites its settings when it exits."
+            "Steam is open, so turning CachyPlay on or off, switching Proton and resetting Windows files wait until it closes. Fixes and your settings work right away. If Steam's window is closed, it may still be running in the system tray: right-click its tray icon → Exit."
                 .into(),
         )
     } else {
         None
     };
+    let state = crate::live::steam_state(&ctx.proc_root);
+    let can_queue =
+        running && ctx.steam.kind != InstallKind::Flatpak && ctx.format_problem().is_none();
     SteamInfo {
         kind: match ctx.steam.kind {
             InstallKind::Native => "native".into(),
@@ -180,6 +196,8 @@ pub fn steam_info(ctx: &Ctx) -> SteamInfo {
         account_id: ctx.account.account_id.clone(),
         persona: ctx.account.persona.clone(),
         blocked_reason,
+        state,
+        can_queue,
     }
 }
 
@@ -308,50 +326,52 @@ pub fn summary_with(ctx: &Ctx, game: &Game, gpu_crashes: usize) -> GameSummary {
             crate::advice::Light::Grey
         },
         badge,
+        removed_in_steam: !enabled && status.as_ref().is_some_and(|s| s.edited_since),
+        waiting: crate::live::queue(&ctx.paths)
+            .into_iter()
+            .rev()
+            .find(|a| a.app_id() == game.app_id)
+            .map(|a| a.describe(&game.name)),
+        stage: None,
     }
 }
 
-/// Refine each game's light with Steam's session log (read once for the whole list).
+/// Each game's light and status words, from the same status steps as the game page (Steam's
+/// session log is read once for the whole list).
 fn set_lights(ctx: &Ctx, games: &mut [GameSummary], events: &[CrashEvent]) {
     use crate::advice::Light;
-    use crate::history::{self, Outcome};
+    use crate::progress::Stage;
     let sessions = crate::crashmatch::parse_steam_sessions(&ctx.steam.console_logs());
-    let crash_refs: Vec<&CrashEvent> = events.iter().collect();
+    let now = chrono::Local::now().naive_local();
     for g in games.iter_mut() {
-        let fixes = crate::fixes::load(&ctx.paths, &g.app_id).fixes;
-        // A fix applied after the last crash, and not judged useless: it's being tried.
-        let newest_fix = fixes
-            .iter()
-            .filter(|f| f.verdict != Some(false) && !f.temporary)
-            .filter_map(|f| chrono::DateTime::parse_from_rfc3339(&f.applied_at).ok())
-            .map(|t| t.naive_local())
-            .max();
-        let last_crash = events
-            .iter()
-            .filter(|e| e.app_id.as_deref() == Some(g.app_id.as_str()))
-            .map(|e| e.at)
-            .max();
-        if g.enabled && newest_fix.is_some_and(|f| last_crash.is_none_or(|c| f > c)) {
-            g.light = Light::Yellow;
-            continue;
-        }
-        if g.light == Light::Red {
-            continue;
-        }
-        let runs = history::runs(&sessions, &g.app_id, &crash_refs);
-        let has_fixes = !fixes.is_empty();
-        g.light = if history::trouble(&runs).is_some() {
-            Light::Red
-        } else if has_fixes && g.enabled {
-            Light::Yellow
-        } else if runs
-            .last()
-            .is_some_and(|r| matches!(r.outcome, Outcome::Played | Outcome::Ok))
-        {
-            Light::Green
-        } else {
-            Light::Grey
+        let ev = crate::advice::Evidence {
+            app_id: g.app_id.clone(),
+            game_name: g.name.clone(),
+            events: events.to_vec(),
+            sessions: sessions.clone(),
+            fixes: crate::fixes::load(&ctx.paths, &g.app_id),
+            notes: crate::notes::load(&ctx.paths, &g.app_id),
+            switched_tool: crate::compat::switched_to(ctx, &g.app_id),
+            switched_at: crate::compat::switched_at(ctx, &g.app_id),
+            ..Default::default()
         };
+        let p = crate::progress::progress(&ev, now);
+        g.stage = Some(
+            match p.stage {
+                Stage::NotWorking => "Not working",
+                Stage::Testing if p.playing_secs.is_some() => "Playing now",
+                Stage::Testing => "Testing a fix",
+                Stage::SeemsToWork => "Seems to work",
+                Stage::WorksWithFix => "Works with a fix",
+                Stage::RunsFine => "Runs fine",
+                Stage::Unknown => "",
+            }
+            .to_string(),
+        )
+        .filter(|x| !x.is_empty());
+        if p.stage != Stage::Unknown || g.light != Light::Red {
+            g.light = p.light;
+        }
     }
 }
 
@@ -600,6 +620,11 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
         user_options,
         obs,
         graphics_card,
+        your_settings: crate::fixes::load(&ctx.paths, &game.app_id)
+            .fixes
+            .into_iter()
+            .find(|f| f.id == crate::fixes::YOUR_SETTINGS)
+            .map(|f| f.label.trim_start_matches("Your settings: ").to_string()),
         edited_since: status.as_ref().is_some_and(|s| s.edited_since),
         tweaks: status.map(|s| s.tweaks).unwrap_or_default(),
         fix: recipe.as_ref().map(|r| FixInfo {

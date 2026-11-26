@@ -1,5 +1,10 @@
 name: CI
 
+# Runs on every push to main (and on pull requests). Two rows per release in the Actions tab:
+#   CI       on main     tests; if they pass and the version in Cargo.toml has no release yet,
+#                        tags the commit vX.Y.Z[-beta.N] and starts the Release workflow.
+#   Release  on the tag  builds and publishes (see release.yml).
+# To release: bump `version` in Cargo.toml and push. Pushing without a bump only runs the tests.
 on:
   push:
     branches: [main]
@@ -7,6 +12,7 @@ on:
 
 jobs:
   test:
+    name: Tests (Ubuntu)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -27,10 +33,11 @@ jobs:
         run: |
           cargo install cargo-audit --locked --quiet
           cargo audit
-      - run: sh -n install.sh
+      - run: sh -n install.sh && sh -n scripts/version-guard.sh
 
   # The same tests on an Arch-based system, closer to CachyOS than Ubuntu.
   arch:
+    name: Tests (Arch)
     runs-on: ubuntu-24.04
     container: archlinux:latest
     steps:
@@ -43,3 +50,30 @@ jobs:
           useradd -m builder
           chown -R builder .
           su builder -c "cargo test --workspace --locked"
+
+  # All tests passed on main: tag a new version and hand it to the Release workflow.
+  tag:
+    name: Tag new version
+    needs: [test, arch]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag and start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          tag="v$ver"
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag already exists (released, or its Release run started from the tag). Nothing to do."
+            exit 0
+          fi
+          gh release list --limit 200 --json tagName --jq '.[].tagName' | sh scripts/version-guard.sh "$ver"
+          grep -q "\"$ver\"" Cargo.lock || { echo "Cargo.lock is out of date: run cargo update --workspace and push again."; exit 1; }
+          gh api "repos/${{ github.repository }}/git/refs" -f ref="refs/tags/$tag" -f sha="${{ github.sha }}" >/dev/null
+          gh workflow run release.yml --ref "$tag" -f title="${{ github.event.head_commit.message }}" -f tested=true
+          echo "Tagged $tag; the Release run is starting."

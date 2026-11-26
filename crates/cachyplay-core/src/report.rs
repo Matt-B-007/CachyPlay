@@ -128,13 +128,37 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
     let launches = game
         .map(|g| recent_launches(paths, &g.app_id, 5))
         .unwrap_or_default();
+    let sessions_all = ctx
+        .map(|c| crate::crashmatch::parse_steam_sessions(&c.steam.console_logs()))
+        .unwrap_or_default();
+    let last_start = game.and_then(|g| {
+        sessions_all
+            .iter()
+            .filter(|x| x.app_id == g.app_id)
+            .map(|x| x.start)
+            .max()
+    });
+    // A Proton log older than the game's latest start is from an earlier run: say so.
+    let mut proton_note: Option<String> = None;
     let proton_log = game.and_then(|g| {
-        crate::fsutil::read_capped_keep(
-            &paths.home.join(format!("steam-{}.log", g.app_id)),
-            HEAD,
-            TAIL,
-            crate::fsutil::IMPORTANT_LOG_LINE,
-        )
+        let (path, written) = crate::evidence::proton_log(paths, &g.app_id)?;
+        let text = crate::fsutil::read_capped_keep(&path, HEAD, TAIL, crate::fsutil::IMPORTANT_LOG_LINE)?;
+        let tool = text
+            .lines()
+            .find_map(|l| l.strip_prefix("Proton: "))
+            .map(|t| t.split_whitespace().last().unwrap_or(t).to_string());
+        if let Some(st) = last_start.filter(|st| written < *st - chrono::Duration::seconds(5)) {
+            let n = format!(
+                "This Proton log is from an earlier start (written {}{}), not the latest start ({}).",
+                written.format("%b %-d %H:%M"),
+                tool.as_deref().map(|t| format!(", {t}")).unwrap_or_default(),
+                st.format("%b %-d %H:%M")
+            );
+            proton_note = Some(n.clone());
+            Some(format!("# NOTE: {n}\n{text}"))
+        } else {
+            Some(text)
+        }
     });
     let unity_logs: Vec<(String, String)> = match (game, ctx) {
         (Some(g), Some(c)) => c
@@ -198,50 +222,110 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
                     "- CachyPlay is on. The last launch started at {} and hasn't closed yet: the game is still running, or it hung (for example after a GPU crash).\n",
                     l.started_at
                 )),
-                Some(l) => s.push_str(&format!(
-                    "- Last launch through CachyPlay: {}, ran {:.0}s, {}{}\n",
-                    l.started_at,
-                    l.runtime_secs,
-                    match (l.exit_code, l.signal) {
-                        (Some(c), _) => format!("exit code {c}"),
-                        (None, Some(sig)) => format!("stopped by signal {sig}"),
-                        _ => "exit status unknown".into(),
-                    },
-                    if l.failed { " (FAILED)" } else { "" }
-                )),
+                Some(l) => {
+                    let at = chrono::DateTime::parse_from_rfc3339(&l.started_at).ok().map(|d| d.naive_local());
+                    let newer = at
+                        .map(|t| {
+                            sessions_all
+                                .iter()
+                                .filter(|x| x.app_id == g.app_id && x.start > t + chrono::Duration::seconds(10))
+                                .count()
+                        })
+                        .unwrap_or(0);
+                    s.push_str(&format!(
+                        "- Last start through CachyPlay: {}, ran {:.0}s, {}{}{}\n",
+                        at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| l.started_at.clone()),
+                        l.runtime_secs,
+                        match (l.exit_code, l.signal) {
+                            (Some(c), _) => format!("exit code {c}"),
+                            (None, Some(sig)) => format!("stopped by signal {sig}"),
+                            _ => "exit status unknown".into(),
+                        },
+                        if l.failed { " (FAILED)" } else { "" },
+                        match newer {
+                            0 => String::new(),
+                            1 => ". The 1 newer start ran without CachyPlay".into(),
+                            n => format!(". The {n} newer starts ran without CachyPlay"),
+                        }
+                    ));
+                }
                 None if ctx.is_some_and(|c| c.status(g).is_ok_and(|st| st.applied)) => s.push_str(
                     "- CachyPlay is on for this game, but no launch through it has finished yet (the game may still be running, or hung).\n",
                 ),
                 None => s.push_str("- CachyPlay isn't turned on for this game, so no launch timing was recorded.\n"),
             }
             if let Some(c) = ctx {
-                let sessions = crate::crashmatch::parse_steam_sessions(&c.steam.console_logs());
-                let crash_refs: Vec<&crate::crashmatch::CrashEvent> = events.iter().collect();
-                let runs = crate::history::runs(&sessions, &g.app_id, &crash_refs);
-                if !runs.is_empty() {
-                    s.push_str("\n## Recent starts (from Steam's log, newest first)\n\n");
-                    for r in runs.iter().rev().take(12) {
-                        let ran = r
-                            .session
-                            .duration()
-                            .map(|d| format!("ran {}", crate::history::duration_text(d)))
-                            .unwrap_or_else(|| "still running".into());
-                        let tool = r
-                            .session
-                            .tool
-                            .as_deref()
-                            .map(|t| format!(" with {}", crate::compat::friendly(t)))
-                            .unwrap_or_default();
-                        let what = match r.outcome {
-                            crate::history::Outcome::Crashed => " — GPU driver crash",
-                            crate::history::Outcome::Short => " — closed within 3 minutes",
-                            crate::history::Outcome::Played => " — played normally",
-                            _ => "",
-                        };
-                        s.push_str(&format!(
-                            "- {}: {ran}{tool}{what}\n",
-                            r.session.start.format("%Y-%m-%d %H:%M")
-                        ));
+                if let Ok(st) = c.status(g) {
+                    if !st.applied {
+                        s.push_str(if st.edited_since {
+                            "- CachyPlay is OFF for this game right now: its part of the launch options was replaced in Steam.\n"
+                        } else {
+                            "- CachyPlay is off for this game right now.\n"
+                        });
+                    }
+                }
+                let ev = crate::advice::gather(c, g, &logs);
+                let p = crate::progress::progress(&ev, ev.now());
+                s.push_str(&format!("\n## Status\n\n**{}**", p.headline));
+                if let Some(d) = &p.detail {
+                    s.push_str(&format!(" {d}"));
+                }
+                s.push_str(&format!(
+                    "\n- A clean run is {}{}.\n",
+                    p.needed_text,
+                    if p.online_only {
+                        ", online (the problem only happens online)"
+                    } else {
+                        ""
+                    }
+                ));
+                if let Some(t) = driver_timeline(&ev) {
+                    s.push_str(&format!("- {t}\n"));
+                }
+                let items = crate::progress::timeline(&ev, ev.now(), 12);
+                if !items.is_empty() {
+                    s.push_str("\n## Recent starts (newest first, from Steam's log)\n\n");
+                    for it in &items {
+                        match it {
+                            crate::progress::Item::Run(r) => {
+                                let mut bits: Vec<String> = Vec::new();
+                                if let Some(t) = &r.tool {
+                                    bits.push(crate::compat::friendly(t));
+                                }
+                                bits.push(if r.through_cachyplay {
+                                    if r.applied.is_empty() {
+                                        "CachyPlay on".into()
+                                    } else {
+                                        format!("CachyPlay: {}", r.applied.join("; "))
+                                    }
+                                } else {
+                                    "CachyPlay off".into()
+                                });
+                                if let Some(gpu) = &r.gpu {
+                                    bits.push(format!("on {gpu}"));
+                                }
+                                if let Some(n) = r.note.as_ref().and_then(|n| n.describe()) {
+                                    let online = match r.note.as_ref().and_then(|n| n.online) {
+                                        Some(true) => ", online",
+                                        Some(false) => ", offline",
+                                        None => "",
+                                    };
+                                    bits.push(format!("{n}{online}"));
+                                }
+                                if let Some(cn) = &r.counts {
+                                    bits.push(cn.clone());
+                                }
+                                s.push_str(&format!(
+                                    "- {}: {} ({})\n",
+                                    r.start.replace('T', " "),
+                                    r.text,
+                                    bits.join(" · ")
+                                ));
+                            }
+                            crate::progress::Item::Event { at, text, .. } => {
+                                s.push_str(&format!("  - — {}: {text}\n", at.replace('T', " ")));
+                            }
+                        }
                     }
                 }
             }
@@ -285,8 +369,54 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
     }
     if crashmatch::several_programs(&events) {
         s.push_str("\n**Several different games hit GPU driver errors.** That points to the graphics driver, a Vulkan add-on (layer) that every game loads, or GPU clocks/power, rather than one broken game. Check whether the NVIDIA driver updated around when the problems started (`grep -i 'upgraded nvidia' /var/log/pacman.log`).\n");
-    } else if !events.is_empty() {
-        s.push_str("\nAll GPU errors came from the same game, which points to that game (or how it uses the driver) rather than the whole system.\n");
+    } else if let Some(e) = events.first() {
+        let who = e
+            .app_id
+            .as_deref()
+            .map(&game_name)
+            .unwrap_or_else(|| "one program".into());
+        let this = game.map(|g| e.app_id.as_deref() == Some(g.app_id.as_str()));
+        match (this, game) {
+            (Some(false), Some(g)) => s.push_str(&format!(
+                "\nNone of these crashes are from {}. They're all from {who}, and are listed because they happened recently.\n",
+                g.name
+            )),
+            _ => s.push_str(&format!(
+                "\nAll graphics driver errors came from {who}. That points to {who} or how it uses the driver, not the whole system; check the driver timeline in the Status section too.\n"
+            )),
+        }
+    }
+    if let (Some(g), Some(c)) = (game, ctx) {
+        if let Some((file, text)) = crate::gpulog::latest(&c.paths, &g.app_id) {
+            let samples = crate::gpulog::parse(&text);
+            let crash = events
+                .iter()
+                .filter(|e| e.app_id.as_deref() == Some(g.app_id.as_str()))
+                .map(|e| e.at)
+                .find(|t| {
+                    samples.first().is_some_and(|f| *t >= f.at)
+                        && samples
+                            .last()
+                            .is_some_and(|l| *t <= l.at + chrono::Duration::seconds(10))
+                });
+            if let Some(d) = crate::gpulog::describe(&samples, crash) {
+                s.push_str(&format!(
+                    "\n## Graphics card during the last start\n\n{d} (from {}, attached)\n",
+                    file.file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ));
+                files.push((
+                    format!(
+                        "logs/gpu-{}",
+                        file.file_name()
+                            .map(|f| f.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    ),
+                    tail_lines(&text, 400),
+                ));
+            }
+        }
     }
     if let (Some(g), Some(c)) = (game, ctx) {
         let suggestions = crate::advice::suggest(&crate::advice::gather(c, g, &logs));
@@ -320,6 +450,21 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
                 }
             }
         }
+    }
+    if let (Some(_), Some(st)) = (game, last_start) {
+        if let Some((file, text)) = crate::gpulog::latest_performance(paths, Some(st)) {
+            if let Some(sum) = crate::gpulog::performance_summary(&text) {
+                let name = file
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                s.push_str(&format!("\n## Performance recording (last start)\n\n{sum} (MangoHud recording {name}, attached)\n"));
+                files.push((format!("logs/performance-{name}"), tail_lines(&text, 3000)));
+            }
+        }
+    }
+    if let Some(n) = &proton_note {
+        s.push_str(&format!("\n**Note:** {n} Turn on \"Detailed Proton log\" for the game and reproduce the problem once for a current one.\n"));
     }
     if proton_log.is_none() && game.is_some() {
         s.push_str("\nNo Proton log found. For a fuller report: add `PROTON_LOG=1` at the start of the game's launch options in Steam, reproduce the problem once, then save a new report.\n");
@@ -545,6 +690,53 @@ pub fn vulkan_layers(summary: &str) -> Vec<String> {
 }
 
 /// The last few pacman upgrades of graphics drivers and kernels, with dates.
+/// "Halo's first graphics crash came 4 days after NVIDIA 620.73.04 was installed; it ran 3
+/// times before that update without driver errors."
+pub fn driver_timeline(ev: &crate::advice::Evidence) -> Option<String> {
+    let first = ev
+        .events
+        .iter()
+        .filter(|e| e.app_id.as_deref() == Some(ev.app_id.as_str()))
+        .map(|e| e.at)
+        .min()?;
+    let upd = ev
+        .driver_updates
+        .iter()
+        .filter(|u| u.at <= first && u.package != "linux-cachyos")
+        .max_by_key(|u| u.at)?;
+    let clean_before = ev
+        .sessions
+        .iter()
+        .filter(|x| x.app_id == ev.app_id && x.start < upd.at)
+        .filter(|x| {
+            x.duration()
+                .is_some_and(|d| d.num_seconds() >= crate::history::SHORT)
+        })
+        .count();
+    let days = (first - upd.at).num_days();
+    Some(format!(
+        "Driver timeline: {}'s first graphics crash came {} after {} {} → {} was installed ({}){}.",
+        ev.game_name,
+        match days {
+            0 => "the same day".to_string(),
+            1 => "1 day".to_string(),
+            d => format!("{d} days"),
+        },
+        upd.package,
+        upd.from,
+        upd.to,
+        upd.at.format("%b %-d"),
+        if clean_before > 0 {
+            format!(
+                "; it ran {clean_before} time{} before that update without driver errors",
+                if clean_before == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        }
+    ))
+}
+
 /// The extra sections of a general report: games and their state, the PC check, CachyPlay's
 /// self-test, and recent driver updates as a timeline.
 fn general_sections(paths: &Paths, ctx: Option<&Ctx>) -> String {
@@ -873,6 +1065,38 @@ fn redact_secret_line(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn driver_timeline_points_at_the_update_before_the_first_crash() {
+        use crate::crashmatch::{CrashEvent, GpuFault, Session};
+        let t = |x: &str| chrono::NaiveDateTime::parse_from_str(x, "%Y-%m-%d %H:%M").unwrap();
+        let ev = crate::advice::Evidence {
+            app_id: "1240440".into(),
+            game_name: "Halo Infinite".into(),
+            events: vec![CrashEvent {
+                at: t("2026-11-25 16:53"),
+                app_id: Some("1240440".into()),
+                faults: vec![GpuFault::default()],
+            }],
+            driver_updates: vec![crate::evidence::DriverUpdate {
+                at: t("2026-11-21 12:00"),
+                package: "nvidia-utils".into(),
+                from: "620.70.06-1".into(),
+                to: "620.73.04-1".into(),
+            }],
+            sessions: vec![Session {
+                app_id: "1240440".into(),
+                start: t("2026-11-07 16:06"),
+                end: Some(t("2026-11-07 16:14")),
+                source: "Steam",
+                tool: None,
+                settings: vec![],
+            }],
+            ..Default::default()
+        };
+        let line = driver_timeline(&ev).unwrap();
+        assert_eq!(line, "Driver timeline: Halo Infinite's first graphics crash came 4 days after nvidia-utils 620.70.06-1 → 620.73.04-1 was installed (Nov 21); it ran 1 time before that update without driver errors.");
+    }
+
     #[test]
     fn lists_every_graphics_package() {
         let q = "firefox 140-1\nlib32-vulkan-radeon 3:26.3.1-5\nvulkan-mesa-implicit-layers 3:26.3.1-5\nlib32-nvidia-utils 620.73.04-1\nnvidia-settings 620.73.04-1\nlinux-cachyos-headers 7.3.6-2\nproton-cachyos-slr 1:11.0-1\nsteam 1.0.0.85-3\nobs-vkcapture 1.5-1\n";

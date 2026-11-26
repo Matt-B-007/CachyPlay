@@ -1,78 +1,79 @@
 name: Release
+run-name: ${{ inputs.title || github.event.head_commit.message || github.ref_name }}
 
-# Fully automatic. Every push to main looks at the version in Cargo.toml:
-#   - already released?  nothing to do.
-#   - new version?       test, build, tag it vX.Y.Z[-beta.N] and publish the release
-#                        (as a pre-release when the version contains "-beta.").
-# To release, bump `version` in Cargo.toml and push. No tags to make by hand.
-# If a test fails, nothing is published: fix it and push again.
+# Builds and publishes a release for a version tag (vX.Y.Z or vX.Y.Z-beta.N), as a pre-release
+# when it contains "-beta.". Normally started by CI after all tests pass on main; also runs if
+# a tag is pushed by hand (then it runs the tests itself first).
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      title:
+        description: Name shown in the Actions list
+        required: false
+      tested:
+        description: CI already ran the tests on this commit
+        required: false
+        default: "false"
 
 permissions:
   contents: write
 
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   release:
+    name: Build and publish
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
-      - name: Is this version new?
+      - name: Check the tag
         id: ver
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          tag="${{ github.ref_name }}"
           ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
-          assets=$(gh release view "v$ver" --json assets --jq '[.assets[].name | select(endswith(".tar.zst"))] | length' 2>/dev/null || echo 0)
+          [ "$tag" = "v$ver" ] || { echo "Tag $tag doesn't match version $ver in Cargo.toml."; exit 1; }
+          assets=$(gh release view "$tag" --json assets --jq '[.assets[].name | select(endswith(".tar.zst"))] | length' 2>/dev/null || echo 0)
           if [ "$assets" -gt 0 ]; then
-            echo "v$ver is already released. Bump the version in Cargo.toml to release again."
-            echo "new=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "$tag is already released."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          gh release list --limit 200 --json tagName --jq '.[].tagName' | sh scripts/version-guard.sh "$ver"
-          echo "new=true" >> "$GITHUB_OUTPUT"
-          echo "Releasing v$ver."
+          echo "go=true" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Install GUI build dependencies (Tauri / WebKitGTK)
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
       - uses: Swatinem/rust-cache@v2
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
 
-      - name: Cargo.lock matches the version
-        if: steps.ver.outputs.new == 'true'
-        run: |
-          grep -q "\"${{ steps.ver.outputs.version }}\"" Cargo.lock || { echo "Cargo.lock is out of date: run cargo update --workspace and push again."; exit 1; }
-
-      - name: Tests (nothing is published if these fail)
-        if: steps.ver.outputs.new == 'true'
+      - name: Tests (only for a tag pushed by hand; CI already tested otherwise)
+        if: steps.ver.outputs.go == 'true' && inputs.tested != 'true'
         run: |
           cargo test --workspace --locked
           TZ=Asia/Tokyo cargo test --workspace --locked
 
       # Generic x86-64: no target-cpu=native, so it runs on every CachyOS/Arch machine.
       - name: Build
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
         run: |
           cargo build --workspace --release --locked
           got=$(./target/release/cachyplay --version)
           [ "$got" = "cachyplay ${{ steps.ver.outputs.version }}" ] || { echo "The build reports '$got'"; exit 1; }
 
       - name: Package
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
         run: |
           name="cachyplay-${{ steps.ver.outputs.tag }}-x86_64-linux"
           mkdir -p "dist/$name"
@@ -82,7 +83,7 @@ jobs:
           cp install.sh dist/install.sh
 
       - name: Sign the checksums (if a signing key is set up; see RELEASING.md)
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
         run: |
@@ -96,18 +97,16 @@ jobs:
           fi
 
       - name: Release notes from CHANGELOG
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
         run: |
           ver="${{ steps.ver.outputs.version }}"; base="${ver%%-*}"
           awk -v v="$base" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "CachyPlay $ver" > notes.md
 
-      # Creates the tag on this commit and publishes the release with the download attached.
       - uses: softprops/action-gh-release@v3
-        if: steps.ver.outputs.new == 'true'
+        if: steps.ver.outputs.go == 'true'
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          target_commitish: ${{ github.sha }}
           name: CachyPlay ${{ steps.ver.outputs.tag }}
           body_path: notes.md
           prerelease: ${{ contains(steps.ver.outputs.version, '-beta.') }}

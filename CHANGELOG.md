@@ -14,9 +14,40 @@ v0.1.0-beta.8 (installer falls back to the newest beta; OBS test fix),
 v0.1.0-beta.9 (plain-language diagnosis, Fix it, PC check, Proton history, settings page, themes),
 v0.1.0-beta.10 (crash times no longer depend on the PC's time zone; dependency updates),
 v0.1.0-beta.11 (graphics card vs built-in chip, crash history across restarts, accurate bug reports,
-automatic releases).
+automatic releases), v0.1.0-beta.12 (status steps, live updates, Try these settings, Steam handling,
+Find the cause, GPU logging).
 
 ### Added
+- **Status steps (beta.12)**: Testing the fix → Seems to work → Works with a fix, naming the fix.
+  A clean run is twice the longest recent crash time (10–60 minutes); "Works with a fix" needs 3
+  clean runs, or 2 adding up to an hour. Crashes from before the fix no longer keep a game red, every
+  start in Steam's log counts (CachyPlay on or off), and a crash in the last seconds of a start counts
+  against it. Online-only problems count only online starts.
+- **Live updates (beta.12)**: the app refreshes by itself when a game starts, ends or crashes, shows
+  "Playing now, 12 of 18 min", and follows Steam opening, closing ("Steam is closing…") or hiding in
+  the tray.
+- **Try these settings (beta.12)**: per-game settings and game options applied at launch, without
+  touching Steam's launch options. Works with Steam open, and counts as a tested change.
+  `cachyplay try <appid> "..."`.
+- **Steam handling (beta.12)**: turning CachyPlay on or off, switching Proton and resetting Windows
+  files wait for Steam to close and then happen by themselves; **Close Steam for me** and **Open
+  Steam**; **Put CachyPlay back** when its part of the launch options was replaced in Steam.
+- **Recent starts timeline (beta.12)**: plain outcomes, crashes inside their starts, what was on
+  for each start, clean-run progress, dividers for fixes, Proton switches, driver and game updates,
+  details on click, and **What happened?** (ran fine, stutter, glitches, crashed, network lag;
+  online or offline).
+- **Find the cause (beta.12)**: the tests in order with what's ruled out, including settings tried in
+  Steam's launch options. Confidence labels Likely / Possible / Long shot that move with the
+  evidence, "what would prove it" on each suggestion, and the last remaining suspect rising.
+- **New suggestions (beta.12)**: fresh shader cache (with Undo), NVIDIA raw-access-chains off for Xid
+  109 hangs, performance recording (MangoHud, one start), "it only happens online", **Big step: go
+  back to the previous NVIDIA driver** (only when the evidence fits and the old driver is in pacman's
+  cache; never automatic; undo first), and **Report it to NVIDIA** after the same error 3 times, with
+  ready-made text. Fixes that worked for another game on this PC are offered with that evidence.
+- **GPU log (beta.12)**: temperature, power and clocks every 2 seconds while a game runs, summed up
+  in bug reports ("cool and steady", "waiting on stuck work", or "hot").
+- **Driver timeline (beta.12)**: "first crash came 4 days after nvidia-utils 620.73.04 was installed;
+  it ran 3 times before without driver errors", in reports and the driver suggestion.
 - **Use the graphics card (beta.11)**: on PCs that also have a graphics chip built into the
   processor or motherboard, CachyPlay points the games it's on for at the graphics card (NVIDIA:
   PRIME offload settings; AMD/Intel cards: Mesa's device selection; DirectX games through DXVK and
@@ -144,6 +175,20 @@ automatic releases).
   automatic dependency updates; `scripts/release-check.sh`, RELEASING.md and SUPPORT.md.
 
 ### Fixed
+- Window icon (beta.12): the title bar and taskbar show the CachyPlay icon instead of KDE's white
+  "W". The menu entry is now named after the app's ID (plus a hidden alias), and the app fixes up
+  older installs by itself.
+- Bug reports (beta.12): a Proton log from an earlier start is labelled as such; the detailed Proton
+  log is written to CachyPlay's own folder (so proton-cachyos logs are found) and turns itself off
+  after one start; reports say when CachyPlay was off and how many newer starts ran without it;
+  crash lists in another game's report say "none of these are from this game"; status, timeline,
+  GPU log and performance recording are included.
+- Advice (beta.12): a setting after `%command%` is no longer called "does nothing" when CachyPlay
+  applies it anyway. The "Keep these settings" line moves misplaced settings in front without
+  duplicates and warns that pasting it turns CachyPlay off.
+- Driver downgrades appear in the driver timeline (pacman's "downgraded" lines).
+- Dependabot removed (beta.12): one CI row on main and one Release row per version tag in Actions;
+  `cargo audit` in CI still fails on libraries with known security problems.
 - 32-bit driver check (beta.11): no more "32-bit AMD driver missing" on PCs with an NVIDIA card and
   a Ryzen processor's built-in graphics. It now checks the driver library and pacman's records
   instead of a file name Mesa changed, and only for the chip games draw on.

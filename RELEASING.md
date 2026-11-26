@@ -13,16 +13,17 @@ that hasn't been released yet. There are no tags to make by hand.
 2. Add the changes to `CHANGELOG.md` under that version.
 3. Optional but recommended: `scripts/release-check.sh`. It runs everything GitHub will run, plus
    an install into a throwaway home folder.
-4. Push to `main` (or upload with StowLock). The **Release** workflow then:
+4. Push to `main` (or upload with StowLock). GitHub then shows two rows in the Actions tab: **CI** on `main` and **Release** on the new tag. CI:
    - stops quietly if that version is already released,
    - refuses a version that ranks below an existing release (for example `0.1.0-beta.12` after
      `0.1.0` is out; use `0.1.1-beta.1`),
    - runs all tests (in two time zones) and publishes nothing if one fails,
-   - builds, tags the commit `vX.Y.Z[-beta.N]` and publishes the release, as a pre-release when the
-     version contains `-beta.`.
+   - tags the commit `vX.Y.Z[-beta.N]` and starts **Release**, which builds and publishes it (as a
+     pre-release when the version contains `-beta.`). A tag pushed by hand also starts Release,
+     which then runs the tests itself first.
 5. On a real PC: update to it with the in-app **Update** button and start a game through it.
 
-Pushing changes without bumping the version runs CI only; nothing is released.
+Pushing changes without bumping the version only runs the tests; nothing is released.
 
 ## Version order
 

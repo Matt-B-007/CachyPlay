@@ -69,6 +69,13 @@ enum Cmd {
         /// on or off
         state: Option<String>,
     },
+    /// Settings to try for one game, applied by CachyPlay at launch without touching Steam's
+    /// launch options: `cachyplay try 1240440 "VKD3D_CONFIG=no_upload_hvv"`. Empty text removes them
+    Try {
+        app_id: String,
+        /// NAME=value settings and game options; leave out %command%
+        settings: Option<String>,
+    },
     /// On PCs with a graphics card and a built-in chip: make a game use the card (on, the
     /// default) or let it pick (off). `cachyplay card 1240440 off`, or no state to show the chips
     Card {
@@ -638,6 +645,27 @@ fn real_main() -> Result<ExitCode> {
                 }
             }
         }
+        Cmd::Try { app_id, settings } => match settings {
+            None => {
+                let current = cachyplay_core::fixes::load(&paths, &app_id)
+                    .fixes
+                    .into_iter()
+                    .find(|f| f.id == cachyplay_core::fixes::YOUR_SETTINGS);
+                println!(
+                    "{}",
+                    current
+                        .map(|f| f.label)
+                        .unwrap_or_else(|| "No settings to try for this game.".into())
+                );
+            }
+            Some(text) => match cachyplay_core::fixes::set_your_settings(&paths, &app_id, &text)? {
+                Some(f) => println!(
+                    "Saved \"{}\". Used the next time the game starts through CachyPlay.",
+                    f.label
+                ),
+                None => println!("Removed your settings for {app_id}."),
+            },
+        },
         Cmd::Card { app_id, state } => {
             use cachyplay_core::gpus;
             let list = gpus::list(&cachyplay_core::pccheck::Root::system());

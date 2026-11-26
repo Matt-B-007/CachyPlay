@@ -15,7 +15,8 @@ v0.1.0-beta.9 (plain-language diagnosis, Fix it, PC check, Proton history, setti
 v0.1.0-beta.10 (crash times no longer depend on the PC's time zone; dependency updates),
 v0.1.0-beta.11 (graphics card vs built-in chip, crash history across restarts, accurate bug reports,
 automatic releases), v0.1.0-beta.12 (status steps, live updates, Try these settings, Steam handling,
-Find the cause, GPU logging).
+Find the cause, GPU logging; never published because a test failed on GitHub),
+v0.1.0-beta.13 (everything from beta.12, plus the test fix).
 
 ### Added
 - **Status steps (beta.12)**: Testing the fix → Seems to work → Works with a fix, naming the fix.
@@ -175,6 +176,9 @@ Find the cause, GPU logging).
   automatic dependency updates; `scripts/release-check.sh`, RELEASING.md and SUPPORT.md.
 
 ### Fixed
+- Tests and launch helper (beta.13): starting a program that was written a moment earlier no longer
+  fails with "Text file busy"; it waits a moment and tries again. This made one test fail on GitHub
+  and kept beta.12 from being published.
 - Window icon (beta.12): the title bar and taskbar show the CachyPlay icon instead of KDE's white
   "W". The menu entry is now named after the app's ID (plus a hidden alias), and the app fixes up
   older installs by itself.

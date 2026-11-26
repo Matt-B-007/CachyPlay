@@ -211,7 +211,7 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
 
     let start = Instant::now();
     let chip: std::sync::Arc<std::sync::Mutex<Option<crate::gpus::Gpu>>> = Default::default();
-    let child = match build(&command, &plan, passthrough).spawn() {
+    let child = match spawn_retry(&mut build(&command, &plan, passthrough)) {
         Ok(c) => Ok(c),
         Err(e) if !passthrough => {
             log(
@@ -221,7 +221,7 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
                 ),
             );
             passthrough = true;
-            build(&command, &plan, true).spawn()
+            spawn_retry(&mut build(&command, &plan, true))
         }
         Err(e) => Err(e),
     };
@@ -311,6 +311,20 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
         (None, Some(s)) => 128 + s,
         _ => 1,
     }
+}
+
+/// Start the game. If Linux says the program file is still open for writing ("Text file busy",
+/// for example right after an update or install wrote it), wait a moment and try again.
+fn spawn_retry(c: &mut Command) -> std::io::Result<std::process::Child> {
+    for _ in 0..25 {
+        match c.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            other => return other,
+        }
+    }
+    c.spawn()
 }
 
 /// On a PC with two graphics chips, look (in the background) at which one the game opened.

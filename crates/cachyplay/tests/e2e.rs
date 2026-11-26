@@ -8,6 +8,27 @@ use std::process::{Command, Output};
 
 const BIN: &str = env!("CARGO_BIN_EXE_cachyplay");
 
+/// Run a program this test just copied or wrote. Tests run in parallel, and for an instant a
+/// process another test is starting can still hold the new file open for writing; Linux then
+/// refuses to run it ("Text file busy"). Wait a moment and try again in that case only.
+trait RunFresh {
+    fn output_fresh(&mut self) -> std::io::Result<Output>;
+}
+
+impl RunFresh for Command {
+    fn output_fresh(&mut self) -> std::io::Result<Output> {
+        for _ in 0..50 {
+            match self.output() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => return other,
+            }
+        }
+        self.output()
+    }
+}
+
 fn cmd(f: &FakeSteam, args: &[&str]) -> Command {
     let mut c = Command::new(BIN);
     c.args(args)
@@ -169,7 +190,7 @@ fn install_then_uninstall() {
         .env_clear()
         .env("HOME", f.home())
         .env("PATH", "/usr/bin:/bin")
-        .output()
+        .output_fresh()
         .unwrap());
     assert!(out.contains(".local/bin/cachyplay"), "{out}");
     let installed = f.home().join(".local/bin/cachyplay");
@@ -183,7 +204,7 @@ fn install_then_uninstall() {
             .env("HOME", f.home())
             .env("PATH", "/usr/bin:/bin")
             .env("CACHYPLAY_PROC_ROOT", f.home().join("proc"))
-            .output()
+            .output_fresh()
             .unwrap()
     };
     ok(run(&["apply", "1240440"]));

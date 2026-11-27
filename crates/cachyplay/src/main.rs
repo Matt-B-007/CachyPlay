@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `cachyplay` command-line interface. All logic lives in `cachyplay-core`.
 
 use anyhow::{bail, Context, Result};

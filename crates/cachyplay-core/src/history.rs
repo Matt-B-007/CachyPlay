@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A game's recent history, from Steam's own session log: when it was started, which compatibility
 //! tool it used, how long it ran, and whether the GPU driver crashed during it. This answers the
 //! questions a person asks first: "when did it stop working?", "what changed?", "did switching

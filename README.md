@@ -204,4 +204,6 @@ The desktop app is a separate program on purpose: the launch wrapper runs before
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The bundled Manrope font is under the SIL Open Font License (`crates/cachyplay-gui/ui/fonts/OFL-Manrope.txt`).
+GPL-3.0-or-later. See [LICENSE](LICENSE). Releases up to and including v0.1.0-beta.18 were MIT and stay MIT. Every source file carries an `SPDX-License-Identifier: GPL-3.0-or-later` line.
+
+Bundled third-party files keep their own licences: the Inter and JetBrains Mono fonts are under the SIL Open Font License (`crates/cachyplay-gui/ui/fonts/OFL-*.txt`), and the Lucide icons under the ISC licence (`crates/cachyplay-gui/ui/icons-license/LICENSE-Lucide.txt`). All Rust dependencies are checked to be GPL-3.0-compatible with `cargo deny check licenses` (part of `scripts/check.sh`).

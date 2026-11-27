@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Working out which game was running when the GPU driver crashed.
 //!
 //! Kernel GPU-fault lines (NVIDIA "Xid", AMD ring timeouts, GPU hangs) carry a time, a process ID

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `--self-test --quick`: can this program start, find what's built into it and read the settings?
 //! A few seconds at most, no network, no other programs, nothing written. The updater runs it on a
 //! new version before swapping it in; the full `--self-test` is `cachyplay doctor`.

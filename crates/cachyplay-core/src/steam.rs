@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Finding Steam, the logged-in account, library folders and installed games.
 
 use crate::vdf::Doc;

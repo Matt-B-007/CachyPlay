@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Crash-safe file writes and size-capped log reading.
 
 use anyhow::{Context, Result};

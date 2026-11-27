@@ -1,28 +1,41 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: Bug report
 description: A game doesn't work, or CachyPlay did something wrong
 labels: [bug]
 body:
-  - type: input
-    id: game
+  - type: markdown
     attributes:
-      label: Game and AppID
-      placeholder: Halo Infinite (1240440)
+      value: |
+        The easiest way: in CachyPlay, open **Help (?) → Report a problem** (or **Report a problem** on the game's page), press **Save to file**, then **Open on GitHub**. It fills in this form and tells you which file to attach.
+  - type: input
+    id: summary
+    attributes:
+      label: Short summary
+      placeholder: "Halo Infinite freezes in online matches"
+    validations:
+      required: true
   - type: textarea
     id: what
     attributes:
-      label: What happened?
+      label: What happened, and what did you expect?
       description: What you did, what you expected, what happened instead.
     validations:
       required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game and AppID (if it's about one game)
+      placeholder: Halo Infinite (1240440)
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: The "About this report" lines from the report (app, version, channel, install type, distro, desktop, Wayland/X11, kernel). "Open on GitHub" fills this in.
+      render: text
   - type: textarea
     id: report
     attributes:
-      label: Bug report zip
-      description: Run `cachyplay report <appid>` and drag the zip from your Desktop here. Personal details are already removed.
+      label: Bug report file
+      description: Drag the saved report (cachyplay-bug-….zip, on your Desktop) here. Personal details are already replaced (home folder, user name, computer name, Steam IDs, IP addresses, tokens). Without the app, `cachyplay --report` saves one.
     validations:
       required: true
-  - type: input
-    id: version
-    attributes:
-      label: CachyPlay version
-      placeholder: output of `cachyplay --version`

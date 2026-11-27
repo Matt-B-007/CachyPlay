@@ -47,6 +47,18 @@ Someone on a beta newer than the newest stable who switches to Stable sees **Swi
 - **If a Release run fails,** check the Releases page for a leftover draft. The workflow deletes a
   leftover draft itself the next time it runs for the same version.
 
+## Known `cargo audit` warnings
+
+`cargo audit` (in `scripts/check.sh`) fails only on security problems. These warnings are known,
+don't fail it, and are checked again whenever dependencies are updated:
+
+| Library | Warning | Comes from | What we'd do |
+|---|---|---|---|
+| chrono | unmaintained (RUSTSEC-2026-0543) | CachyPlay itself (dates and times) | Move to its successor once one is settled; a behaviour change, so its own release |
+| zbus_names, zvariant, zvariant_derive | unmaintained (RUSTSEC-2026-0370/0371/0372) | tauri-plugin-single-instance (via zbus 5) | Update the plugin when it moves off them |
+| glib | unsound iterator (RUSTSEC-2024-0429) | GTK 0.18, used by Tauri | Fixed when Tauri moves to newer GTK bindings; CachyPlay doesn't use that iterator |
+| proc-macro-error | unmaintained (RUSTSEC-2024-0370) | GTK 0.18 build macros, used by Tauri | Same as glib (build time only) |
+
 ## Staged releases
 
 - Every version ships to the **Beta** channel first.

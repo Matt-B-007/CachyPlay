@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Per-game fix files ("recipes"): declarative TOML using a fixed list of named actions.
 //! A recipe can never run arbitrary commands.
 

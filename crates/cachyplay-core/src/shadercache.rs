@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! "Start the game's shader cache fresh": move Steam's shader cache for one game aside (Steam and
 //! the driver rebuild it), with Undo. Only the newest set-aside copy is kept.
 

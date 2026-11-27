@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end tests: the real `cachyplay` binary against a fake home with a fake Steam install.
 
 use cachyplay_core::testutil::FakeSteam;

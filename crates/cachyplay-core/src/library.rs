@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! What the GUI (and CLI) show: game summaries with one status badge each, and a detail view
 //! with the before/after changes table. Plain data, ready to serialize.
 

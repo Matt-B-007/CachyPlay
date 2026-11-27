@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Matching log lines against known crash patterns, and telling a likely driver fault apart
 //! from a game or Proton problem. 0.1.0 reports matches; 0.2.0 turns them into one-click fixes.
 

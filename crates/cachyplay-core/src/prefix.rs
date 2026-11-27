@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Resetting a game's Windows files (its Proton prefix, `steamapps/compatdata/<AppID>`): a common
 //! fix that's scary by hand. Nothing is deleted: the old folder is renamed next to the original
 //! (instant, same drive), Steam builds a fresh one on the next start, and Undo puts the old one

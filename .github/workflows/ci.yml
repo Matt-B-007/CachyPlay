@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: CI
 
 # Runs on every push to main (and on pull requests). Two rows per release in the Actions tab:
@@ -23,15 +24,16 @@ jobs:
       - name: Install Rust (the version pinned in rust-toolchain.toml, with clippy and rustfmt)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Install check tools (shellcheck 0.11.0, cargo-audit)
+      - name: Install check tools (shellcheck 0.11.0, cargo-audit, cargo-deny)
         run: |
           pipx install shellcheck-py==0.11.0.1
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           cargo install cargo-audit --locked --quiet
+          cargo install cargo-deny --locked --quiet
       # Everything is checked by one script, the same one used before every release, so the checks
       # here and on the PC can't differ: shell scripts, formatting, clippy, tests (also in Tokyo
       # time), cargo audit, release build + quick self-test.
-      - name: Run scripts/check.sh (shell scripts, fmt, clippy, tests, audit, release self-test)
+      - name: Run scripts/check.sh (shell scripts, licence lines, fmt, clippy, tests, licences, audit, release self-test)
         run: sh scripts/check.sh
 
   # The same tests on an Arch-based system, closer to CachyOS than Ubuntu (Arch's own Rust package;

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: Release
 run-name: ${{ inputs.title || github.event.head_commit.message || github.ref_name }}
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A permanent record of every change tried for a game: when it went on, when it came off, and why.
 //! Undoing a fix used to erase it, so a fix that made things worse came back as "new". Now a fix
 //! that crashed, black-screened or was undone because it made things worse stays ruled out for that

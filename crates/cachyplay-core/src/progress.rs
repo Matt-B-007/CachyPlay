@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Where a game stands, step by step, and the timeline behind it.
 //!
 //! Status steps after a change (a fix, your own settings, or a Proton switch):

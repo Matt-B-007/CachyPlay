@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The optional tray icon (off unless turned on in Settings › General) and, when it's off, desktop
 //! notifications for the same news. House Standard states: Idle (plain) · Active (lit) · Muted on
 //! purpose (red badge) · Needs attention (amber dot) · Problem (red dot) · Disconnected (grey).

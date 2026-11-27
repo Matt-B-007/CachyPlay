@@ -23,7 +23,9 @@ planned for beta.15: the window never freezes, signed updates, one window, crash
 script fix), v0.1.0-beta.17 (the family look: new colours, fonts, icons and logo, Help menu,
 Ctrl+K search, keyboard shortcuts, first-run tour, standard update/report/uninstall dialogs,
 optional tray icon), v0.1.0-beta.18 (fixes from testing beta.17: no empty band at the top, the
-new icon shows in KDE, clearer Steam status, better Proton and driver advice).
+new icon shows in KDE, clearer Steam status, better Proton and driver advice), v0.1.0-beta.19
+(a tidy-up with no behaviour changes: smaller code files, the GPL-3.0-or-later licence, licence
+checks).
 
 ### Added
 - **Help menu (beta.17)**: the **?** button at the top right has Report a problem, What's new,
@@ -238,6 +240,22 @@ new icon shows in KDE, clearer Steam status, better Proton and driver advice).
   default in the app; `cachyplay uninstall --keep-settings` in the terminal.
 
 ### Changed
+- **Licence (beta.19)**: From this version CachyPlay is GPL-3.0-or-later; earlier releases remain
+  MIT. Every source file now starts with an `SPDX-License-Identifier: GPL-3.0-or-later` line, and
+  `scripts/check.sh` checks both that and, with `cargo deny`, that every dependency's licence works
+  with the GPL (all are MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, MPL-2.0, Unicode-3.0, CC0, 0BSD,
+  MIT-0 or Unlicense). The bundled fonts (SIL OFL) and icons (ISC) keep their own licences.
+- **Smaller code files (beta.19, no behaviour change)**: the 2,950-line suggestion engine is now
+  six files by topic (the rules, Proton, driver history, the summary, the game page's insights,
+  and the tests), and the window's 2,280-line script is eleven files (core, game list, game page,
+  fixes, actions, live updates, bug reports, updates, settings, menus, start-up). The code itself
+  moved unchanged, and every test passes as it was; the only test edits point at the new file
+  names. Nothing else changed in this release, so anything that behaves differently afterwards is
+  down to the split.
+- **Templates and notes (beta.19)**: the GitHub bug report form matches the Report a problem
+  dialog (summary, what happened, the details lines, the saved file), and the pull request
+  checklist uses `scripts/check.sh`. The known `cargo audit` warnings are listed in RELEASING.md
+  with where each comes from.
 - **The family look (beta.17)**: the same colours, corners, spacing and type as Gimbot, Sluice,
   StowLock and Stream Preflight: navy-tinted dark and light backgrounds, cards with a faint accent
   edge, small accent corner brackets on the focused card and the selected game, a soft glow only on
@@ -403,4 +421,6 @@ new icon shows in KDE, clearer Steam status, better Proton and driver advice).
   Uninstall and "Restore all games" no longer need the current account at all.
 
 ### Not yet included
-- Tested fix files (the bundled Halo Infinite file is an untested example).
+- Tested fix files. The bundled Halo Infinite file (`recipes/1240440.toml`) is only an example of
+  the format with general, low-risk settings: it isn't a confirmed fix, and its comments now say
+  what was tried for Halo's online Xid 109 crashes without success.

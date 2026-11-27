@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Where CachyPlay keeps its files (XDG base directories) and where it is allowed to run from.
 
 use anyhow::{bail, Context, Result};

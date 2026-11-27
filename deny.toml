@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# `cargo deny check licenses` (part of scripts/check.sh): every dependency must be under a licence
+# that can be combined with CachyPlay's GPL-3.0-or-later. All of these are GPL-3.0-compatible.
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "GPL-3.0-or-later",
+]
+confidence-threshold = 0.9

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! What the player said about a start: "What happened?" (ran fine, stutter, graphics glitches,
 //! crashed, network lag) and whether it was online. Stored per game, keyed by the start time.
 

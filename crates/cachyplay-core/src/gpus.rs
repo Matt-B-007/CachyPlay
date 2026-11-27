@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Graphics chips: which ones the PC has, which one a running game uses, and how to point games
 //! at the graphics card instead of the weaker chip built into the processor or motherboard.
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Editing a game's Steam `LaunchOptions` string without disturbing the user's own options.
 //!
 //! CachyPlay inserts exactly one segment, directly in front of `%command%`:

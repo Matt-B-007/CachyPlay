@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A fake home folder with a realistic native Steam install, for tests.
 
 use crate::manage::Ctx;

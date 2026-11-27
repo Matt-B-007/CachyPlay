@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Byte-preserving reader/editor for Valve KeyValues text files (`.vdf`, `.acf`).
 //!
 //! Steam's config files are edited *in place*: we parse the file into a tree that remembers

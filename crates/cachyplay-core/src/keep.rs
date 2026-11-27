@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Keeping the settings that made a game work, without CachyPlay.
 //!
 //! CachyPlay applies a game's settings at launch time (from its fix file and the fixes you applied).

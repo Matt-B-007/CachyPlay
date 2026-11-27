@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Optional ProtonDB rating for a game: how well it runs for other Linux players. Off unless the
 //! user turns it on in Settings; only the game's AppID is sent, and the answer is kept for a week.
 

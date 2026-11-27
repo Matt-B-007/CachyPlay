@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! CachyPlay's own log, ~/.local/state/cachyplay/cachyplay.log: at most 1 MB per file and 3 files
 //! kept (`cachyplay.log`, `.log.1`, `.log.2`), plus the last ~500 lines of this session in memory
 //! so a bug report can include them even when the file was just rotated.

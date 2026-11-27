@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! "CachyPlay closed unexpectedly last time": a running marker is written when the desktop app
 //! starts and removed when it closes normally. If the marker is still there at the next start,
 //! the app didn't close normally (a crash, the system ending it, a power cut). A panic hook adds

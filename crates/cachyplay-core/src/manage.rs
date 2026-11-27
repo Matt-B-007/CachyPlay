@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Apply, undo and restore: the only code that writes to Steam's files.
 //!
 //! Rules enforced here (see the design spec, "Safety model"):

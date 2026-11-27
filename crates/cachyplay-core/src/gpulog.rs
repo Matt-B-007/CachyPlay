@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The graphics card's temperature, power and clock speeds every 2 seconds while a game runs,
 //! so a bug report can say "the card was cool and steady when it hung" without the player running
 //! anything in a terminal. NVIDIA through `nvidia-smi`, AMD through the kernel's sensor files.

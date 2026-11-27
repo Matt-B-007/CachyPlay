@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Refuse a version that would rank at or below a release that already exists, because the
 # updater would never offer it to anyone.
 #   printf 'v0.1.0\nv0.1.0-beta.10\n' | scripts/version-guard.sh 0.1.0-beta.11   -> fails

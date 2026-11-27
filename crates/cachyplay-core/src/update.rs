@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! App updates from GitHub Releases, with a Stable or Beta channel.
 //!
 //! - Package installs (/usr/bin, from the AUR) are updated by pacman: we only show the command.

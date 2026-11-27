@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # CachyPlay installer.
 #
 #   From the downloaded folder (zip from GitHub, or a release download):

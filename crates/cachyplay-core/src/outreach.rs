@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Texts for the people who can fix a problem: a short report for the game's developer, and a
 //! prefilled GitHub issue to share that a fix worked (so it can become a tested fix for everyone).
 //! Nothing is sent by CachyPlay; the user reads and sends it.

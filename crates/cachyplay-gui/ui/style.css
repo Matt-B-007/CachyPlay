@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 * { box-sizing: border-box; }
 /* The icon sprite (a hidden SVG of symbols). Hidden here, not with an inline style: the window's
    security rules ignore inline styles, which left a 150 px empty band at the top in beta.17. */

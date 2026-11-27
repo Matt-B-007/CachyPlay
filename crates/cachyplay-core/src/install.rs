@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Installing a downloaded copy into its own location (~/.local/bin), and removing it again.
 //! Package-manager installs (/usr/bin) are owned by pacman and never touched here.
 

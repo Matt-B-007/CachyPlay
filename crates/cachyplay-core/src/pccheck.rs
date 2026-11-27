@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A one-minute check of the PC for the things that most often stop games on Linux, and a
 //! self-test of CachyPlay's own setup. Every problem comes with a plain explanation and, where
 //! possible, a command to copy. Nothing here changes the system.

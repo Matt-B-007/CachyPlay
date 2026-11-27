@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Fixes you applied to a game from a suggestion (one click, undo any time).
 //!
 //! They live in `~/.local/share/cachyplay/fixes/<appid>.json` and are applied by the launch

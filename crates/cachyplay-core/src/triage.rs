@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The second pass over the suggestions: what's already been tried (also outside CachyPlay, in
 //! Steam's launch options), what that rules out, how sure each remaining suspect is, what would
 //! prove it, and the "Find the cause" ladder. Also the rules that need that bigger picture: a fresh

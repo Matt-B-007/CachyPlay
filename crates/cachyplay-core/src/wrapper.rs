@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `cachyplay run -- <steam command>`: the launch wrapper Steam calls.
 //!
 //! FAIL-OPEN CONTRACT: nothing CachyPlay does may stop a game from launching.

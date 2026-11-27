@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Optional check before pushing a new version: scripts/release-check.sh [v0.1.0-beta.11]
 # GitHub runs the tests and publishes by itself when the version in Cargo.toml is new; this
 # catches problems on your PC first.

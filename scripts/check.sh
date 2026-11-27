@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Every check CI runs, in the same order with the same flags. GitHub's CI calls this script and
 # nothing else for its checks, and StowLock runs it before pushing, so a pass here means a pass
 # there.
@@ -76,6 +77,7 @@ check_tools() {
     if [ "$PART" = all ]; then
         have shellcheck || say_missing "shellcheck" shellcheck "Other systems: pip install shellcheck-py==$SHELLCHECK_VERSION.1"
         have cargo-audit || say_missing "cargo-audit" cargo-audit "Other systems: cargo install cargo-audit --locked"
+        have cargo-deny || say_missing "cargo-deny" cargo-deny "Other systems: cargo install cargo-deny --locked"
     fi
     if [ "$found_missing" = 1 ]; then
         printf '\nInstall them on CachyOS / Arch with:\n    sudo pacman -S --needed%s\n' "$MISSING_PACMAN" >&2
@@ -119,6 +121,19 @@ check_shell_scripts() {
     done
 }
 
+# Every source file states its licence (GPL-3.0-or-later) in an SPDX line.
+check_licence_lines() {
+    step "Check every source file has its licence line (SPDX-License-Identifier: GPL-3.0-or-later)"
+    missing_spdx=$(find . \( -path ./target -o -path ./.git -o -path '*/gen' -o -path '*/fixtures' \) -prune -o \
+        -type f \( -name '*.rs' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.sh' -o -name '*.yml' \) \
+        -print | while read -r f; do
+        grep -q 'SPDX-License-Identifier: GPL-3.0-or-later' "$f" || printf '%s\n' "$f"
+    done)
+    [ -z "$missing_spdx" ] || fail "these files have no SPDX licence line:
+$missing_spdx"
+    echo "ok  every source file"
+}
+
 check_format() {
     step "Check Rust formatting (cargo fmt --check)"
     cargo fmt --all --check || fail "the code isn't formatted: run cargo fmt --all"
@@ -134,6 +149,11 @@ run_tests() {
     cargo test --workspace --locked || fail "a test failed (above)"
     step "Run all tests in another time zone (TZ=Asia/Tokyo; times must not depend on where the PC is)"
     TZ=Asia/Tokyo cargo test --workspace --locked || fail "a test failed in another time zone (above)"
+}
+
+check_licences() {
+    step "Check every dependency's licence works with GPL-3.0-or-later (cargo deny)"
+    cargo deny --locked check licenses || fail "a dependency's licence isn't allowed (see deny.toml)"
 }
 
 check_audit() {
@@ -163,9 +183,11 @@ tests)
     ;;
 all)
     check_shell_scripts
+    check_licence_lines
     check_format
     check_lints
     run_tests
+    check_licences
     check_audit
     check_release_build
     ;;

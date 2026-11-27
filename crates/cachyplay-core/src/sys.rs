@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Small helpers for running system tools safely.
 
 use std::path::{Path, PathBuf};

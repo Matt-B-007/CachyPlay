@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Steam compatibility tools (Proton versions): which ones are installed, which one a game is forced
 //! to use, and switching a game to another one, the same as Steam's Properties → Compatibility →
 //! "Force the use of a specific Steam Play compatibility tool". Needs Steam closed, like every

@@ -3,9 +3,9 @@ resolver = "2"
 members = ["crates/cachyplay-core", "crates/cachyplay", "crates/cachyplay-gui"]
 
 [workspace.package]
-version = "0.1.0-beta.18"
+version = "0.1.0-beta.19"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/Matt-B-007/CachyPlay"
 rust-version = "1.90"
 

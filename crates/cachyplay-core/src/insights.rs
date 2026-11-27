@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Extra facts the advice rules use: what a Unity game's own log says about its graphics, whether
 //! a game ships anti-cheat that blocks Linux, and how the games that *do* run fine are set up.
 

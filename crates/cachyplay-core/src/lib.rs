@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! CachyPlay core library. Every feature lives here so the CLI and the GUI stay thin.
 
 pub mod advice;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! CachyPlay desktop app. A thin Tauri shell: every command calls into `cachyplay-core`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -1183,6 +1184,40 @@ fn log_ui_error(message: String) {
     }
 }
 
+/// The window's files, all built into the program (checked by `--self-test --quick`).
+const WINDOW_FILES: [&str; 14] = [
+    "index.html",
+    "tokens.css",
+    "style.css",
+    "js/core.js",
+    "js/rail.js",
+    "js/game.js",
+    "js/fixes.js",
+    "js/actions.js",
+    "js/live.js",
+    "js/report.js",
+    "js/updates.js",
+    "js/settings.js",
+    "js/menus.js",
+    "js/main.js",
+];
+
+/// The window's scripts (ui/js), in the order index.html loads them, for the tests.
+#[cfg(test)]
+const SCRIPTS: [(&str, &str); 11] = [
+    ("js/core.js", include_str!("../ui/js/core.js")),
+    ("js/rail.js", include_str!("../ui/js/rail.js")),
+    ("js/game.js", include_str!("../ui/js/game.js")),
+    ("js/fixes.js", include_str!("../ui/js/fixes.js")),
+    ("js/actions.js", include_str!("../ui/js/actions.js")),
+    ("js/live.js", include_str!("../ui/js/live.js")),
+    ("js/report.js", include_str!("../ui/js/report.js")),
+    ("js/updates.js", include_str!("../ui/js/updates.js")),
+    ("js/settings.js", include_str!("../ui/js/settings.js")),
+    ("js/menus.js", include_str!("../ui/js/menus.js")),
+    ("js/main.js", include_str!("../ui/js/main.js")),
+];
+
 /// `cachyplay-gui --version`, `--self-test [--quick]`: answered without opening a window.
 fn answer_flags(context: &tauri::Context) -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1207,7 +1242,7 @@ fn answer_flags(context: &tauri::Context) -> Option<i32> {
             return Some(1);
         }
     };
-    for page in ["index.html", "app.js", "style.css"] {
+    for page in WINDOW_FILES {
         if context
             .assets()
             .get(&tauri::utils::assets::AssetKey::from(page))
@@ -1474,15 +1509,32 @@ mod tests {
         assert!(failures.is_empty(), "below 4.5:1:\n{}", failures.join("\n"));
     }
 
+    /// index.html loads every script, in the order of SCRIPTS (main.js last, after what it uses).
+    #[test]
+    fn every_script_is_loaded_in_order() {
+        let html = include_str!("../ui/index.html");
+        let mut at = 0;
+        for (name, _) in SCRIPTS {
+            let tag = format!("<script src=\"{name}\"></script>");
+            let found = html[at..]
+                .find(&tag)
+                .unwrap_or_else(|| panic!("{tag} missing or out of order"));
+            at += found + tag.len();
+        }
+        assert!(WINDOW_FILES
+            .iter()
+            .all(|f| !f.starts_with("js/") || SCRIPTS.iter().any(|(n, _)| n == f)));
+    }
+
     /// No colour is written anywhere but tokens.css.
     #[test]
     fn colours_live_only_in_the_tokens_file() {
         let hex = regex_lite_hex();
-        for (name, text) in [
+        let fixed = [
             ("style.css", include_str!("../ui/style.css")),
-            ("app.js", include_str!("../ui/app.js")),
             ("index.html", include_str!("../ui/index.html")),
-        ] {
+        ];
+        for (name, text) in fixed.into_iter().chain(SCRIPTS) {
             let found: Vec<&str> = text
                 .lines()
                 .filter(|l| !l.contains("#FFFFFF\"]") && hex(l))
@@ -1504,15 +1556,16 @@ mod tests {
             "index.html has an inline style attribute"
         );
         assert!(!html.contains("<style"), "index.html has a <style> block");
-        let js = include_str!("../ui/app.js");
-        assert!(
-            !js.contains("setAttribute(\"style\""),
-            "app.js sets a style attribute"
-        );
-        assert!(
-            !js.contains(" style: "),
-            "app.js passes a style attribute to h()"
-        );
+        for (name, js) in SCRIPTS {
+            assert!(
+                !js.contains("setAttribute(\"style\""),
+                "{name} sets a style attribute"
+            );
+            assert!(
+                !js.contains(" style: "),
+                "{name} passes a style attribute to h()"
+            );
+        }
     }
 
     /// A line with a #rgb/#rrggbb colour or rgb()/rgba() in it (ids like href="#x" don't count).

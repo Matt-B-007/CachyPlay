@@ -1,6 +1,9 @@
-# Halo Infinite. EXAMPLE RECIPE: NOT YET TESTED ON REAL HARDWARE.
+# Halo Infinite. EXAMPLE RECIPE: NOT A CONFIRMED FIX.
+# It shows the file format with general, low-risk settings; it does not fix any known problem.
 # Keep `tested = false` until someone has played with it on AMD and NVIDIA (see CONTRIBUTING.md).
-# Only general, low-risk settings are included; nothing game-specific has been verified yet.
+# Known (Nov 2026, NVIDIA 620.73, CachyOS): online matches can crash with NVIDIA driver error
+# Xid 109 even with these settings. proton-cachyos-slr, PROTON_ENABLE_NVAPI=1, other Protons,
+# vkd3d options and a fresh shader cache were all tried without fixing it.
 schema = 1
 app_id = 1240440
 name = "Halo Infinite"

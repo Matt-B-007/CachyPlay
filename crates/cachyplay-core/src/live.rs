@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Keeping the app up to date while it's open, and changes that wait for Steam to close.
 //!
 //! - [`steam_state`]: running, closing (helper processes still finishing), or closed.

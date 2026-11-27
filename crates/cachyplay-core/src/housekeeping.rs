@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Keeping CachyPlay's own files small and safe across versions: trims old launch records and
 //! logs so they never fill a drive, and keeps a copy of the settings folder before a new version
 //! first touches it. Bug reports on the Desktop are the user's files and are never deleted.

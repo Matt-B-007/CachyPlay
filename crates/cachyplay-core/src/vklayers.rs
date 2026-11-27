@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Vulkan "implicit layers": add-ons the Vulkan loader injects into every game (frame generation,
 //! overlays, upscalers, capture tools). Each one installs a small JSON manifest; reading those tells
 //! us which add-ons are always on, which only switch on with an environment variable, and how to

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! OBS game capture: start games through `obs-gamecapture` so OBS's "Game Capture" source records
 //! just the game, not the whole desktop.
 //!

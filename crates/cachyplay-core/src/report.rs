@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The timestamped, privacy-scrubbed bug report bundle.
 
 use crate::crashmatch;

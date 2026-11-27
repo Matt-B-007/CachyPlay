@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Collecting the facts that bug reports and fix suggestions are built on: kernel GPU errors,
 //! which game was running when, recent driver upgrades. Shared by the app, reports and the CLI.
 

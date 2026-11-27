@@ -16,12 +16,28 @@ pub struct UnityInfo {
     pub frame_generation: bool,
     /// The game's version, if it logs one ("Moon Sweepers 1.0.6 (…)" → "1.0.6").
     pub version: Option<String>,
+    /// The forced graphics mode broke the game's renderer: missing shader pieces, or the same
+    /// rendering error over and over (SHRED A BILLION in Direct3D 12: black screen).
+    pub mode_broken: Option<String>,
+    /// Unity engine version ("6000.0.74f1").
+    pub engine: Option<String>,
 }
 
 pub fn unity_info(log: &str, game_name: &str) -> UnityInfo {
     let mut info = UnityInfo::default();
+    let mut missing: Option<String> = None;
+    let mut render_errors = 0usize;
     for line in log.lines() {
         let l = line.trim();
+        if let Some(v) = l.strip_prefix("Initialize engine version:") {
+            info.engine = v.split_whitespace().next().map(str::to_string);
+        }
+        if missing.is_none() && l.starts_with("Kernel '") && l.ends_with("not found") {
+            missing = Some(l.trim_end_matches('.').to_string());
+        }
+        if l.starts_with("Exception:") || l.starts_with("ArgumentException:") {
+            render_errors += 1;
+        }
         if let Some(rest) = l.strip_prefix("Forcing GfxDevice:") {
             info.graphics = Some(rest.trim().to_string());
             info.forced = true;
@@ -55,6 +71,14 @@ pub fn unity_info(log: &str, game_name: &str) -> UnityInfo {
                 }
             }
         }
+    }
+    if info.forced {
+        let mode = info.graphics.clone().unwrap_or_default();
+        info.mode_broken = match (missing, render_errors) {
+            (Some(m), _) => Some(format!("The game logged \"{m}\" right after starting in {mode}: its build doesn't include everything {mode} needs, so it can't draw (black screen).")),
+            (None, n) if n >= 50 => Some(format!("The game logged the same rendering error {n} times in {mode}, so it can't draw properly in that mode.")),
+            _ => None,
+        };
     }
     info
 }
@@ -182,6 +206,22 @@ pub fn env_settings(options: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spots_a_graphics_mode_the_game_cant_use() {
+        let log = "Initialize engine version: 6000.0.74f1 (7685f01dc6be)\nForcing GfxDevice: Direct3D 12\nKernel 'MainUploadScatterInstances' not found\nException: Blitter is already initialized.\n";
+        let u = unity_info(log, "SHRED A BILLION");
+        assert_eq!(u.engine.as_deref(), Some("6000.0.74f1"));
+        let why = u.mode_broken.unwrap();
+        assert!(
+            why.contains("MainUploadScatterInstances") && why.contains("Direct3D 12"),
+            "{why}"
+        );
+        // The game's own default mode with no errors: fine.
+        assert!(unity_info("Version:  Direct3D 11.0 [level 11.1]\n", "x")
+            .mode_broken
+            .is_none());
+    }
+
     use super::*;
 
     #[test]

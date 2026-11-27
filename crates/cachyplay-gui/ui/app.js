@@ -468,7 +468,7 @@ function eventRow(it) {
   return h("li", { class: "tl-event tl-" + it.what }, h("span", { class: "when" }, when(it.at)), h("span", {}, it.text));
 }
 
-const NOTE_CHOICES = [["fine", "Ran fine"], ["stutter", "Stutter"], ["glitches", "Graphics glitches"], ["crash", "Crashed to desktop"], ["network", "Network lag"]];
+const NOTE_CHOICES = [["fine", "Ran fine"], ["black_screen", "Black screen"], ["stutter", "Stutter"], ["glitches", "Graphics glitches"], ["crash", "Crashed to desktop"], ["network", "Network lag"]];
 
 function runRow(d, r, items, ins) {
   const newestEnded = items.find((x) => x.kind === "run" && !x.running);
@@ -483,7 +483,8 @@ function runRow(d, r, items, ins) {
     r.counts ? h("span", { class: "chip " + (r.counts.startsWith("✓") ? "good" : "muted") }, r.counts) : null,
     r.note && r.note.kind ? h("span", { class: "chip" }, NOTE_CHOICES.find((c) => c[0] === r.note.kind)[1] + (r.note.online === true ? " · online" : r.note.online === false ? " · offline" : "")) : null,
   ];
-  const details = h("div", { class: "tl-details", hidden: true },
+  const isOpen = state.openRuns && state.openRuns.has(r.start);
+  const details = h("div", { class: "tl-details", hidden: !isOpen },
     r.crash_detail ? h("p", {}, r.crash_detail) : null,
     h("p", { class: "muted" }, [
       r.secs != null ? "Ran " + duration(r.secs) : null,
@@ -491,7 +492,7 @@ function runRow(d, r, items, ins) {
       r.applied.length ? "CachyPlay applied: " + r.applied.join("; ") : null,
     ].filter(Boolean).join(" · ")));
   return h("li", { class: "tl-run" },
-    h("button", { class: "tl-head", "aria-expanded": "false", onclick: (e) => { const b = e.currentTarget; const open = b.getAttribute("aria-expanded") !== "true"; b.setAttribute("aria-expanded", String(open)); details.hidden = !open; } },
+    h("button", { class: "tl-head", "aria-expanded": String(!!isOpen), onclick: (e) => { const b = e.currentTarget; const open = b.getAttribute("aria-expanded") !== "true"; b.setAttribute("aria-expanded", String(open)); details.hidden = !open; if (open) state.openRuns.add(r.start); else state.openRuns.delete(r.start); } },
       h("span", { class: "when" }, when(r.start)),
       h("span", { class: cls }, r.text)),
     h("div", { class: "chips" }, chips),
@@ -569,16 +570,20 @@ function suggestionBody(appId, s) {
       blocked && !canQueueNow() ? h("span", { class: "muted" }, "Close Steam first.") : null));
   }
   if (s.action === "reset_shader_cache") {
-    out.push(h("div", { class: "actions" }, s.status !== "new" || (ins && ins.shader_cache_aside)
-      ? h("button", { class: "secondary", onclick: () => simpleAction("undo_shader_cache", appId) }, "Undo (put the old cache back)")
-      : h("button", { class: "primary", onclick: () => confirmDialog("Start the shader cache fresh?", "The current cache is moved aside, not deleted. Close the game first. The first start afterwards stutters a little while shaders rebuild.", "Reset cache").then((ok) => ok && simpleAction("reset_shader_cache", appId)) }, "Reset shader cache")));
+    const cacheItem = ins && ins.applied.find((a) => a.id === "shader_cache");
+    out.push(h("div", { class: "actions" }, cacheItem
+      ? h("button", { class: "secondary", onclick: () => undoChange(appId, cacheItem) }, "Undo (put the old cache back)")
+      : h("button", { class: "primary", onclick: async () => (await okToStack(appId)) && confirmDialog("Start the shader cache fresh?", "The current cache is moved aside, not deleted. Close the game first. The first start afterwards stutters a little while shaders rebuild.", "Reset cache").then((ok) => ok && simpleAction("reset_shader_cache", appId)) }, "Reset shader cache")));
   }
   if (s.fix) {
     const tech = [...Object.entries(s.fix.env).map(([k, v]) => `${k}=${v}`), ...s.fix.args].join(" ");
     out.push(h("details", { class: "tech-details" }, h("summary", {}, "Show the technical setting"), h("code", { class: "tech" }, tech)));
-    out.push(h("div", { class: "actions" }, s.status !== "new"
-      ? h("button", { class: "secondary", onclick: () => undoFix(appId, s.id) }, "Undo")
-      : h("button", { class: "primary", onclick: (e) => applyFix(appId, s.id, e.currentTarget) }, "Apply fix"),
+    const item = ins && ins.applied.find((a) => a.id === s.fix.id);
+    out.push(h("div", { class: "actions" }, item
+      ? h("button", { class: "secondary", onclick: () => undoChange(appId, item) }, "Undo")
+      : s.try_again
+        ? h("button", { class: "secondary", onclick: (e) => tryAgain(appId, s.id).then(() => applyFix(appId, s.id, e.currentTarget)) }, "Try again")
+        : h("button", { class: "primary", onclick: (e) => applyFix(appId, s.id, e.currentTarget) }, "Apply fix"),
       s.status === "worked" && ins && ins.share_urls[s.id]
         ? h("button", { class: "secondary", title: "Opens a GitHub page you can read before sending. It helps make this a tested fix for everyone.", onclick: () => openUrl(ins.share_urls[s.id]) }, "Share that this worked")
         : null));
@@ -595,6 +600,7 @@ function fixesTab(d) {
   }
   const ins = insightsFor(d.summary.app_id);
   return [
+    appliedCard(d),
     ins && ins.find_cause && ins.find_cause.steps.length ? findCauseCard(ins.find_cause) : null,
     h("p", { class: "muted intro" }, "Worked out on your PC from crashes, logs and how your other games run, most likely first. Every fix can be undone. Labels: Likely (two or more clues agree), Possible (one clue), Long shot (a general fix)."),
     h("ol", { class: "fix-list" }, list.map((s, i) => h("li", {},
@@ -645,6 +651,7 @@ function yourSettingsCard(d) {
   const s = d.summary;
   const input = h("input", { type: "text", class: "settings-input", value: d.your_settings || "", placeholder: "VKD3D_CONFIG=no_upload_hvv -force-d3d12", "aria-label": `Settings to try for ${s.name}`, spellcheck: "false" });
   const save = async () => {
+    if (input.value.trim() && input.value.trim() !== (d.your_settings || "") && !(await okToStack(s.app_id))) return;
     try {
       toast(await invoke("set_your_settings", { appId: s.app_id, text: input.value }), "success");
     } catch (e) {
@@ -674,7 +681,7 @@ function settingsTab(d) {
     h("tr", { class: `sub ${c.status}` },
       h("td", { colspan: "3" }, h("p", {}, c.why), c.technical ? h("code", {}, c.technical) : null)),
   ]);
-  const out = [yourSettingsCard(d), addonsCard(d), card("",
+  const out = [yourSettingsCard(d), appliedCard(d), addonsCard(d), card("",
     h("h2", { class: "card-title" }, s.enabled ? "What CachyPlay changes" : "What CachyPlay would change"),
     h("table", { class: "changes" },
       h("thead", {}, h("tr", {}, h("th", {}, "Setting"), h("th", {}, "Stock"), h("th", {}, "CachyPlay"))),
@@ -848,7 +855,17 @@ function duration(secs) {
 }
 
 /* ---------- actions ---------- */
+/// Changing two things before the next start hides which one helped: ask first.
+async function okToStack(appId) {
+  const changed = insightsFor(appId)?.changed_since_start || [];
+  if (!changed.length) return true;
+  return confirmDialog("Change another thing before testing?",
+    `You already changed ${changed.join(", ")} since the game last started. Changing two things at once means you won't know which one helped. Start the game once first to test it, or apply anyway.`,
+    "Apply anyway");
+}
+
 async function applyFix(appId, id, btn) {
+  if (!(await okToStack(appId))) return;
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Applying…";
@@ -863,6 +880,7 @@ async function applyFix(appId, id, btn) {
 }
 
 async function compatAction(cmd, args) {
+  if (cmd === "switch_compat_tool" && !(await okToStack(args.appId))) return;
   try {
     if (canQueueNow()) {
       const action = cmd === "undo_compat_tool" ? { action: "undo_tool", app_id: args.appId } : { action: "switch_tool", app_id: args.appId, tool: args.name };
@@ -994,6 +1012,7 @@ async function openSteam() {
 /* ---------- staying up to date ---------- */
 state.live = null;
 state.lastLoad = Date.now();
+state.openRuns = new Set();
 async function poll() {
   let l;
   try {
@@ -1016,14 +1035,27 @@ async function poll() {
       toast(String(e), "error");
     }
   }
-  const playing = state.insights.get(state.selected)?.progress?.playing_secs != null;
-  const changed = prev.steam !== l.steam || prev.token !== l.token || (playing && Date.now() - state.lastLoad > 60000);
+  const changed = prev.steam !== l.steam || prev.token !== l.token;
   if (changed && !typing && !dialog && !state.busy) {
-    state.insights.delete(state.selected);
+    // Keep the loaded suggestions on screen while fresh ones load (no empty placeholders).
     state.lastLoad = Date.now();
     await load();
   } else if (prev.steam !== l.steam) {
     renderChrome();
+  } else if (!typing && !dialog && Date.now() - state.lastLoad > 60000) {
+    // While a game runs, only the "Playing now, 12 of 18 min" card ticks over.
+    const ins = state.insights.get(state.selected);
+    if (ins?.progress?.playing_secs != null) {
+      state.lastLoad = Date.now();
+      try {
+        const fresh = await invoke("game_insights", { appId: state.selected });
+        state.insights.set(state.selected, fresh);
+        const old = document.querySelector(".card.progress");
+        if (old && state.detail) old.replaceWith(progressCard(state.detail, fresh.progress));
+      } catch {
+        /* next tick */
+      }
+    }
   }
 }
 setInterval(poll, 3000);
@@ -1261,6 +1293,82 @@ async function installSelf() {
     toast(String(e), "error");
   }
   load();
+}
+
+function chooseDialog(title, text, choices) {
+  return new Promise((resolve) => {
+    const dlg = $("choose");
+    $("choose-title").textContent = title;
+    $("choose-text").textContent = text;
+    $("choose-actions").replaceChildren(
+      ...choices.map(([value, label, cls]) => h("button", { class: cls || "secondary", value }, label)),
+      h("button", { class: "secondary", value: "cancel" }, "Cancel"));
+    dlg.onclose = () => resolve(dlg.returnValue && dlg.returnValue !== "cancel" ? dlg.returnValue : null);
+    dlg.returnValue = "";
+    dlg.showModal();
+    // Keyboard starts on Cancel, so Enter never crosses something off by accident.
+    $("choose-actions").lastElementChild.focus();
+  });
+}
+
+const UNDO_REASONS = [["worse", "It made things worse", "danger-btn"], ["didnt_help", "It didn't help"], ["testing", "Just testing"]];
+
+async function undoChange(appId, item) {
+  let reason = "testing";
+  if (!item.temporary) {
+    reason = await chooseDialog(`Undo "${item.label}"?`, "Why? \"Made things worse\" and \"Didn't help\" cross it off for this game so it isn't suggested again. \"Just testing\" doesn't.", UNDO_REASONS);
+    if (!reason) return;
+  }
+  try {
+    toast(await invoke("undo_change", { appId, id: item.id, reason }), "success");
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
+async function undoAll(appId, items) {
+  const reason = await chooseDialog("Undo everything CachyPlay applies to this game?", `${items.length} change${items.length === 1 ? "" : "s"}: ${items.map((i) => i.label).join(", ")}. Why?`, UNDO_REASONS);
+  if (!reason) return;
+  for (const item of items) {
+    try {
+      await invoke("undo_change", { appId, id: item.id, reason: item.temporary ? "testing" : reason });
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
+  toast("Everything is undone. The game starts plain next time.", "success");
+  state.insights.delete(appId);
+  await load();
+}
+
+async function tryAgain(appId, id) {
+  try {
+    await invoke("try_again", { appId, id });
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  state.insights.delete(appId);
+  await load();
+}
+
+function appliedCard(d) {
+  const ins = insightsFor(d.summary.app_id);
+  const items = (ins && ins.applied) || [];
+  if (!items.length) return null;
+  const KIND = { fix: "Fix", settings: "Your settings", proton: "Proton", shader_cache: "Shader cache" };
+  return card("applied",
+    h("h2", { class: "card-title" }, "Applied for this game"),
+    h("p", { class: "muted" }, d.summary.enabled ? "Everything CachyPlay adds when this game starts. Steam's launch options don't show these." : "CachyPlay is off for this game, so these aren't used right now (except a Proton switch, which is set in Steam)."),
+    h("ul", { class: "rows applied-list" }, items.map((it) => h("li", { class: it.worse ? "worse" : "" },
+      h("span", {},
+        h("span", { class: "chip" }, KIND[it.kind] || "Fix"), " ", h("strong", {}, it.label.replace(/^Your settings: /, "")),
+        h("span", { class: "muted" }, it.since ? ` · since ${it.since}` : ""),
+        it.temporary ? h("span", { class: "muted" }, " · for one start") : null,
+        it.worse ? h("p", { class: "s-note warn" }, "This made things worse for this game: " + it.worse + " Undo it.") : null),
+      h("button", { class: it.worse ? "primary" : "secondary", onclick: () => undoChange(d.summary.app_id, it) }, "Undo")))),
+    items.length > 1 ? h("div", { class: "actions" }, h("button", { class: "link", onclick: () => undoAll(d.summary.app_id, items) }, "Undo all")) : null);
 }
 
 function confirmDialog(title, text, okLabel) {

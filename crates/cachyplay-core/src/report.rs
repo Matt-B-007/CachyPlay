@@ -218,10 +218,26 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
                 s.push_str(&format!("- Runs with: {runs}\n"));
             }
             match launches.first() {
-                Some(l) if l.running => s.push_str(&format!(
-                    "- CachyPlay is on. The last launch started at {} and hasn't closed yet: the game is still running, or it hung (for example after a GPU crash).\n",
-                    l.started_at
-                )),
+                Some(l) if l.running => {
+                    // CachyPlay's record wasn't finished; Steam's log may know how it ended.
+                    let at = chrono::DateTime::parse_from_rfc3339(&l.started_at).ok().map(|d| d.naive_local());
+                    let steam_end = at.and_then(|t| {
+                        sessions_all
+                            .iter()
+                            .find(|x| x.app_id == g.app_id && (x.start - t).num_seconds().abs() <= 15)
+                            .and_then(|x| x.end.map(|e| (e - x.start).num_seconds()))
+                    });
+                    s.push_str(&match steam_end {
+                        Some(secs) => format!(
+                            "- Last start through CachyPlay: {}, ran {secs}s (from Steam's log; CachyPlay's own record of it wasn't finished)\n",
+                            at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| l.started_at.clone())
+                        ),
+                        None => format!(
+                            "- CachyPlay is on. The last start began at {} and is still running, or hung (for example after a GPU crash).\n",
+                            l.started_at
+                        ),
+                    });
+                }
                 Some(l) => {
                     let at = chrono::DateTime::parse_from_rfc3339(&l.started_at).ok().map(|d| d.naive_local());
                     let newer = at
@@ -369,6 +385,19 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
     }
     if crashmatch::several_programs(&events) {
         s.push_str("\n**Several different games hit GPU driver errors.** That points to the graphics driver, a Vulkan add-on (layer) that every game loads, or GPU clocks/power, rather than one broken game. Check whether the NVIDIA driver updated around when the problems started (`grep -i 'upgraded nvidia' /var/log/pacman.log`).\n");
+        // Which of them are already sorted out.
+        if let Some(c) = ctx {
+            let mut ids: Vec<&str> = events.iter().filter_map(|e| e.app_id.as_deref()).collect();
+            ids.sort();
+            ids.dedup();
+            for id in ids {
+                if let Some(gm) = c.steam.find_game(id) {
+                    let ev = crate::advice::gather(c, &gm, &logs);
+                    let p = crate::progress::progress(&ev, ev.now());
+                    s.push_str(&format!("- {}: {}\n", gm.name, p.headline));
+                }
+            }
+        }
     } else if let Some(e) = events.first() {
         let who = e
             .app_id
@@ -699,10 +728,17 @@ pub fn driver_timeline(ev: &crate::advice::Evidence) -> Option<String> {
         .filter(|e| e.app_id.as_deref() == Some(ev.app_id.as_str()))
         .map(|e| e.at)
         .min()?;
+    // Only real driver version changes: "7.3.6-1 → 7.3.6-2" is a rebuild of the same thing, and
+    // linux-* packages are kernels and their prebuilt modules, versioned by kernel, not driver.
+    let ver = |v: &str| {
+        v.rsplit_once('-')
+            .map(|(a, _)| a.to_string())
+            .unwrap_or_else(|| v.to_string())
+    };
     let upd = ev
         .driver_updates
         .iter()
-        .filter(|u| u.at <= first && u.package != "linux-cachyos")
+        .filter(|u| u.at <= first && !u.package.starts_with("linux") && ver(&u.from) != ver(&u.to))
         .max_by_key(|u| u.at)?;
     let clean_before = ev
         .sessions
@@ -713,6 +749,10 @@ pub fn driver_timeline(ev: &crate::advice::Evidence) -> Option<String> {
                 .is_some_and(|d| d.num_seconds() >= crate::history::SHORT)
         })
         .count();
+    if clean_before == 0 {
+        // The game wasn't played before that update, so there's nothing to compare with.
+        return None;
+    }
     let days = (first - upd.at).num_days();
     Some(format!(
         "Driver timeline: {}'s first graphics crash came {} after {} {} → {} was installed ({}){}.",
@@ -1095,6 +1135,19 @@ mod tests {
         };
         let line = driver_timeline(&ev).unwrap();
         assert_eq!(line, "Driver timeline: Halo Infinite's first graphics crash came 4 days after nvidia-utils 620.70.06-1 → 620.73.04-1 was installed (Nov 21); it ran 1 time before that update without driver errors.");
+        // A kernel-module rebuild (same version, new release) isn't a driver change.
+        let mut rebuild = ev.clone();
+        rebuild.driver_updates = vec![crate::evidence::DriverUpdate {
+            at: t("2026-11-25 07:48"),
+            package: "linux-cachyos-nvidia-open".into(),
+            from: "7.3.6-1".into(),
+            to: "7.3.6-2".into(),
+        }];
+        assert!(driver_timeline(&rebuild).is_none());
+        // A game first played after the update: nothing to compare with.
+        let mut new_game = ev.clone();
+        new_game.sessions.clear();
+        assert!(driver_timeline(&new_game).is_none());
     }
 
     #[test]

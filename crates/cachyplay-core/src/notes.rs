@@ -8,7 +8,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub const KINDS: &[&str] = &["fine", "stutter", "glitches", "crash", "network"];
+pub const KINDS: &[&str] = &[
+    "fine",
+    "black_screen",
+    "stutter",
+    "glitches",
+    "crash",
+    "network",
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunNote {
@@ -22,11 +29,15 @@ pub struct RunNote {
 impl RunNote {
     /// A problem with the game's graphics (network lag doesn't count against a graphics fix).
     pub fn graphics_problem(&self) -> bool {
-        matches!(self.kind.as_str(), "stutter" | "glitches" | "crash")
+        matches!(
+            self.kind.as_str(),
+            "stutter" | "glitches" | "crash" | "black_screen"
+        )
     }
     pub fn describe(&self) -> Option<&'static str> {
         Some(match self.kind.as_str() {
             "fine" => "You said it ran fine",
+            "black_screen" => "You said the screen stayed black",
             "stutter" => "You said it stuttered",
             "glitches" => "You said the graphics glitched",
             "crash" => "You said it crashed",

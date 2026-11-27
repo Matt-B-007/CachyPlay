@@ -32,6 +32,7 @@ pub mod shadercache;
 pub mod steam;
 pub mod sys;
 pub mod triage;
+pub mod tries;
 pub mod update;
 pub mod vdf;
 pub mod vklayers;

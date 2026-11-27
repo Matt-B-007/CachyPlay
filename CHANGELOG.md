@@ -16,9 +16,23 @@ v0.1.0-beta.10 (crash times no longer depend on the PC's time zone; dependency u
 v0.1.0-beta.11 (graphics card vs built-in chip, crash history across restarts, accurate bug reports,
 automatic releases), v0.1.0-beta.12 (status steps, live updates, Try these settings, Steam handling,
 Find the cause, GPU logging; never published because a test failed on GitHub),
-v0.1.0-beta.13 (everything from beta.12, plus the test fix).
+v0.1.0-beta.13 (everything from beta.12, plus the test fix), v0.1.0-beta.14 (every change
+undoable and remembered, no constant refreshing, reliable start records, per-game fixes).
 
 ### Added
+- **Applied for this game (beta.14)**: one card listing every fix, your settings, Proton switch and
+  shader cache CachyPlay applies to a game, each with Undo, plus Undo all. It no longer disappears
+  when a suggestion stops matching (Direct3D 12 couldn't be undone in the app).
+- **Every try remembered (beta.14)**: a change that crashed, black-screened, or was undone because it
+  made things worse stays ruled out for that game, with the reason and a date, and isn't offered
+  again until you choose **Try again**. Undo asks why: made things worse, didn't help, or just
+  testing. The timeline shows when each change went on and off.
+- **Broken graphics modes spotted (beta.14)**: when a forced mode makes the game log missing shader
+  pieces or the same rendering error over and over (SHRED A BILLION in Direct3D 12), that mode is
+  ruled out for the game on the first start.
+- **One change at a time (beta.14)**: CachyPlay asks before a second change goes in before the game
+  has started, and the status names every change being tested together.
+- **"Black screen" (beta.14)** in What happened?, counted as a problem even without a driver crash.
 - **Status steps (beta.12)**: Testing the fix → Seems to work → Works with a fix, naming the fix.
   A clean run is twice the longest recent crash time (10–60 minutes); "Works with a fix" needs 3
   clean runs, or 2 adding up to an hour. Crashes from before the fix no longer keep a game red, every
@@ -176,6 +190,25 @@ v0.1.0-beta.13 (everything from beta.12, plus the test fix).
   automatic dependency updates; `scripts/release-check.sh`, RELEASING.md and SUPPORT.md.
 
 ### Fixed
+- Constant refreshing (beta.14): the app no longer redraws every few seconds because Steam writes to
+  its console log; only games starting or ending, crashes and changes count. While a game runs,
+  only the "Playing now" card ticks over, and opened starts stay open.
+- Start records (beta.14): one-start fixes (detailed Proton log, performance recording) come off when
+  the start begins, so they never stay on; the GPU logger takes short readings from a thread, so
+  nothing can be left running; reports use Steam's end time when CachyPlay's record wasn't finished;
+  CachyPlay's log notes every start and how it ended.
+- Short starts (beta.14): a start that closed early without a crash no longer counts as a failure for
+  a fix or a Proton switch; finished starts count their real play time (170 s showed as 0).
+- Other games' fixes (beta.14): only mentioned for similar games (same Unity version and graphics
+  mode, or same NVIDIA hang and translation layer), with the reason, and never above Possible.
+- NVIDIA advice (beta.14): says per game whether the raw-access-chains switch is the confirmed case
+  (Direct3D 11 through DXVK) or only reported (Direct3D 12 through vkd3d). A game that only runs with
+  that NVIDIA feature off now counts as evidence toward the driver, and the NVIDIA report says so.
+- Driver timeline (beta.14): ignores kernel-module rebuilds (same version, new release) and games
+  first played after the update.
+- Reports (beta.14): the "several games" section says where each game stands; game update times are
+  in local time (they were UTC); Proton names are plain ("GE-Proton11-11"); "Share that this worked"
+  only appears once a fix reaches "Works with a fix" or you confirm it.
 - Tests and launch helper (beta.13): starting a program that was written a moment earlier no longer
   fails with "Text file busy"; it waits a moment and tries again. This made one test fail on GitHub
   and kept beta.12 from being published.

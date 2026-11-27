@@ -159,6 +159,16 @@ pub fn ruled_out(ev: &Evidence, out: &[Suggestion]) -> Vec<String> {
             v.push(s.title.clone());
         }
     }
+    // Changes ruled out earlier and since undone (they may not be suggestions any more).
+    for t in ev.tries.all_ruled_out() {
+        let label = t.label.trim_end_matches('.').to_string();
+        if !v
+            .iter()
+            .any(|x| x.contains(&label) || label.contains(x.as_str()))
+        {
+            v.push(label);
+        }
+    }
     v.dedup();
     v
 }
@@ -385,13 +395,24 @@ pub fn extra_rules(ev: &Evidence, out: &mut Vec<Suggestion>, root: &Root) {
     }
 
     // NVIDIA's raw access chains: a known cause of Xid 109 hangs through DXVK, maybe vkd3d too.
+    // Which layer the game uses: its Unity log, or what Proton loaded.
+    let layer: Option<String> = match ev.unity.as_ref().map(|u| (u.graphics.clone(), u.forced)) {
+        Some((Some(g), false)) if g.starts_with("Direct3D 11") => Some("dxvk".into()),
+        Some((Some(g), false)) if g.starts_with("Direct3D 12") => Some("vkd3d".into()),
+        Some((_, true)) => Some("dxvk".into()),
+        _ => ev.proton_layer.clone(),
+    };
     if nvidia_hangs > 0 && ev.uses_proton {
         out.push(Suggestion {
             id: "nvidia_raw_access_chains".into(),
             title: "Turn off one NVIDIA Vulkan feature for this game".into(),
             why: vec![
                 "This crash is an NVIDIA Xid 109 hang. A known cause in DirectX games run through Proton is the VK_NV_raw_access_chains feature; turning it off stopped the hang in other games.".into(),
-                "Confirmed for DirectX 11 (DXVK); for DirectX 12 (vkd3d) it's reported but not confirmed.".into(),
+                match layer.as_deref() {
+                    Some("dxvk") => format!("{} runs in Direct3D 11, through DXVK: that's the case where this is a confirmed fix.", ev.game_name),
+                    Some("vkd3d") => format!("{} runs in Direct3D 12, through vkd3d: there it's only reported, not confirmed.", ev.game_name),
+                    _ => "Confirmed for Direct3D 11 games (DXVK); for Direct3D 12 (vkd3d) it's reported but not confirmed.".into(),
+                },
             ],
             fix: Some(fix(
                 "nvidia_raw_access_chains",
@@ -400,8 +421,8 @@ pub fn extra_rules(ev: &Evidence, out: &mut Vec<Suggestion>, root: &Root) {
                 false,
             )),
             status: status("nvidia_raw_access_chains"),
-            priority: 34,
-            confidence: Confidence::Unsure,
+            priority: if layer.as_deref() == Some("dxvk") { 23 } else { 34 },
+            confidence: if layer.as_deref() == Some("dxvk") { Confidence::Possible } else { Confidence::Unsure },
             ..Default::default()
         });
     }
@@ -569,6 +590,9 @@ pub fn nvidia_report(
     }
     if ev.notes.online_only {
         s.push_str("\nOnly happens in online matches; offline play is fine.");
+    }
+    for g in &ev.nvidia_switch_helped {
+        s.push_str(&format!("\n{g} (same Xid 109 hang, Direct3D 11 through DXVK) runs normally with VK_NV_raw_access_chains disabled (dxvk.enableNvRawAccessChains = False)."));
     }
     if !ruled.is_empty() {
         s.push_str(&format!("\nRuled out: {}.", ruled.join("; ")));

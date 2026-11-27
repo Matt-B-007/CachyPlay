@@ -557,3 +557,8 @@ button.link { background: none; border: 0; color: var(--cyan); cursor: pointer; 
 .ladder-helped .ladder-tag { color: var(--emerald); }
 .ladder-testing .ladder-tag, .ladder-next .ladder-tag { color: var(--amber); }
 .ladder-next span:last-child { font-weight: 600; }
+
+.dialog-actions.wrap { flex-wrap: wrap; }
+.applied-list li { align-items: center; }
+.applied-list li.worse { border-left: 3px solid var(--coral); padding-left: 8px; }
+.tl-event.tl-off span:last-child { color: var(--amber); }

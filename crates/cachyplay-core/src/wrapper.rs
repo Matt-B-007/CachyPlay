@@ -209,6 +209,19 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
         }));
     }
 
+    if let Some(id) = &app_id {
+        log(
+            paths,
+            &format!(
+                "app {id}: start{}",
+                if passthrough {
+                    " (unchanged)".to_string()
+                } else {
+                    format!(" with: {}", plan.applied.join("; "))
+                }
+            ),
+        );
+    }
     let start = Instant::now();
     let chip: std::sync::Arc<std::sync::Mutex<Option<crate::gpus::Gpu>>> = Default::default();
     let child = match spawn_retry(&mut build(&command, &plan, passthrough)) {
@@ -229,12 +242,40 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
     if let (Ok(c), Some(id)) = (&child, &app_id) {
         watch_chip(c.id(), chip.clone());
         gpu_log = crate::gpulog::start(paths, id, &started_at);
+        // Diagnostic-only fixes (detailed Proton log, performance recording) are for one start:
+        // they're in this start's settings already, so take them off now. Waiting for the end
+        // meant they stayed on whenever Steam stopped the game before CachyPlay could clean up.
+        if !passthrough {
+            for f in crate::fixes::load(paths, id)
+                .fixes
+                .iter()
+                .filter(|f| f.temporary)
+            {
+                let _ = crate::fixes::remove(paths, id, &f.id);
+                log(
+                    paths,
+                    &format!("app {id}: \"{}\" is used for this start only", f.label),
+                );
+            }
+        }
     }
     let status = child.and_then(|mut c| c.wait());
     if let Some(g) = gpu_log {
         g.stop();
     }
     let runtime = start.elapsed().as_secs_f64();
+    if let Some(id) = &app_id {
+        log(
+            paths,
+            &format!(
+                "app {id}: ended after {runtime:.0}s ({})",
+                match &status {
+                    Ok(s) => format!("{s}"),
+                    Err(e) => format!("couldn't start: {e}"),
+                }
+            ),
+        );
+    }
 
     let (code, signal) = match &status {
         Ok(s) => {
@@ -283,17 +324,6 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
             };
             if let Some(path) = &record_path {
                 let _ = write_json(path, &rec);
-            }
-            // Diagnostic-only fixes (detailed Proton log, performance recording) are for one run.
-            if runtime >= 30.0 && !passthrough {
-                let all = crate::fixes::load(paths, id);
-                for f in all.fixes.iter().filter(|f| f.temporary) {
-                    let _ = crate::fixes::remove(paths, id, &f.id);
-                    log(
-                        paths,
-                        &format!("app {id}: \"{}\" turned off after one run", f.label),
-                    );
-                }
             }
             crate::housekeeping::trim(paths);
             if failed {

@@ -32,6 +32,8 @@ pub struct Evidence {
     /// Rule ids that matched in this game's own logs (Proton log, Unity Player.log).
     pub log_findings: Vec<String>,
     pub has_proton_log: bool,
+    /// Which DirectX translation layer the Proton log shows: "dxvk" or "vkd3d".
+    pub proton_layer: Option<String>,
     pub is_unity: bool,
     pub uses_proton: bool,
     pub launches: Vec<LaunchRecord>,
@@ -58,8 +60,12 @@ pub struct Evidence {
     pub notes: crate::notes::RunNotes,
     /// The time to judge "now" by (tests set it; None means the clock).
     pub now: Option<NaiveDateTime>,
-    /// Fixes that worked for other games on this PC: (game name, fix id).
-    pub worked_elsewhere: Vec<(String, String)>,
+    /// Fixes that worked for other games on this PC: (game name, fix id, why they're similar).
+    pub worked_elsewhere: Vec<(String, String, String)>,
+    /// Every change tried for this game, including undone ones.
+    pub tries: crate::tries::Tries,
+    /// Games (any, on this PC) that run once NVIDIA's raw access chains are switched off.
+    pub nvidia_switch_helped: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -121,6 +127,9 @@ pub struct Suggestion {
     /// A bigger change to the PC (like going back to an older driver): shown last, never automatic.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub big_step: bool,
+    /// Ruled out for this game earlier; offer "Try again".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub try_again: bool,
 }
 
 impl Evidence {
@@ -161,8 +170,16 @@ impl Evidence {
 
     pub(crate) fn status_of(&self, id: &str) -> Status {
         let Some(fix) = self.fixes.fixes.iter().find(|f| f.id == id) else {
-            return Status::New;
+            // Undone, but tried before and ruled out for this game: stays crossed off.
+            return if self.tries.ruled_out(id).is_some() {
+                Status::DidntHelp
+            } else {
+                Status::New
+            };
         };
+        if self.tries.ruled_out(id).is_some_and(|t| t.off_at.is_none()) {
+            return Status::DidntHelp;
+        }
         match fix.verdict {
             Some(true) => return Status::Worked,
             Some(false) => return Status::DidntHelp,
@@ -188,9 +205,23 @@ impl Evidence {
                     .is_some_and(|d| d.num_seconds() >= history::SHORT)
             })
             .collect();
-        if crashed_since || since.iter().any(|l| l.failed) {
+        // A short start without a crash proves nothing (the player may have closed it); only a
+        // crash, or the player saying it went wrong, counts against the fix.
+        let bad_note = self.sessions.iter().any(|s| {
+            s.app_id == self.app_id
+                && applied_at.is_some_and(|t| s.start > t)
+                && self
+                    .notes
+                    .get(s.start)
+                    .is_some_and(|n| n.graphics_problem())
+        });
+        if crashed_since || bad_note {
             Status::DidntHelp
-        } else if since.iter().any(|l| !l.failed) || !steam_runs.is_empty() {
+        } else if !steam_runs.is_empty()
+            || since
+                .iter()
+                .any(|l| l.runtime_secs >= history::SHORT as f64)
+        {
             Status::Worked
         } else {
             Status::Applied
@@ -431,7 +462,12 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
         let mut priority = 15;
         if let Some(u) = gpu_driver.last() {
             let fine = others_fine(u.at);
-            if !fine.is_empty() {
+            if !ev.nvidia_switch_helped.is_empty() {
+                why.push(format!(
+                    "{} only runs with an NVIDIA-specific Vulkan feature switched off, which points at how this driver handles it, even though other games run fine.",
+                    ev.nvidia_switch_helped.join(" and ")
+                ));
+            } else if !fine.is_empty() {
                 why.push(format!(
                     "But other games ran fine on this same driver ({}), so a broken driver is less likely.",
                     fine.join("; ")
@@ -560,13 +596,18 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
     let trouble_here = trouble.is_some() || !game_events.is_empty();
 
     // 7. Unity games stuck on Direct3D 11: try the graphics modes the working games use.
-    if let Some(u) = ev.unity.as_ref().filter(|_| trouble_here) {
-        if u.graphics.as_deref() == Some("Direct3D 11") {
+    // Keep showing these while one is on or has been tried, even though the game's log then names
+    // the forced mode instead of Direct3D 11 (otherwise the card, and its Undo, disappears).
+    let mode_fix_used = ["unity_d3d12", "unity_vulkan"].iter().any(|id| {
+        ev.fixes.fixes.iter().any(|f| f.id == *id) || ev.tries.tries.iter().any(|t| t.id == *id)
+    });
+    if let Some(u) = ev.unity.as_ref().filter(|_| trouble_here || mode_fix_used) {
+        if u.graphics.as_deref() == Some("Direct3D 11") || mode_fix_used {
             let mut why: Vec<String> = Vec::new();
             why.push(format!(
-                "{} draws with Direct3D 11{}, which Proton turns into Vulkan with DXVK.",
+                "{} draws with Direct3D 11{} by default, which Proton turns into Vulkan with DXVK.",
                 ev.game_name,
-                if u.forced {
+                if u.forced && u.graphics.as_deref() == Some("Direct3D 11") {
                     " (the game picks it at start)"
                 } else {
                     ""
@@ -773,17 +814,52 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
         s.ask_verdict = played_since;
     }
 
+    // The forced graphics mode broke the game's renderer: rule that fix out for this game.
+    if let Some(u) = &ev.unity {
+        if let (Some(why), Some(mode)) = (&u.mode_broken, &u.graphics) {
+            let id = if mode.contains("12") {
+                "unity_d3d12"
+            } else if mode.contains("Vulkan") {
+                "unity_vulkan"
+            } else {
+                ""
+            };
+            if let Some(s) = out.iter_mut().find(|s| s.id == id) {
+                s.status = Status::DidntHelp;
+                s.why.insert(0, why.clone());
+            }
+        }
+    }
+    // Ruled out earlier for this game (crashed, black screen, or undone because it made things
+    // worse): say why, struck through, with "Try again".
+    for s in out.iter_mut() {
+        if let Some(t) = ev.tries.ruled_out(&s.id) {
+            let when = t
+                .off()
+                .or(t.on())
+                .map(|d| d.format("%b %-d").to_string())
+                .unwrap_or_default();
+            let why = format!(
+                "Ruled out for this game ({when}): {}",
+                t.ruled_out.clone().unwrap_or_default()
+            );
+            if !s.why.contains(&why) {
+                s.why.insert(0, why);
+            }
+            s.status = Status::DidntHelp;
+            s.try_again = true;
+        }
+    }
     crate::triage::extra_rules(ev, &mut out, &crate::pccheck::Root::system());
     crate::triage::mark_steam_tries(ev, &mut out);
     for s in out.iter_mut() {
-        if let Some((game, _)) = ev.worked_elsewhere.iter().find(|(_, id)| *id == s.id) {
+        if let Some((game, _, why)) = ev.worked_elsewhere.iter().find(|(_, id, _)| *id == s.id) {
             if s.status != Status::DidntHelp {
-                s.why
-                    .push(format!("This fix worked for {game} on this PC."));
-                s.confidence = match s.confidence {
-                    Confidence::Unsure => Confidence::Possible,
-                    _ => Confidence::Likely,
-                };
+                s.why.push(format!("A similar game was fixed by this: {game} ({why}). It may not apply here: each game's build decides."));
+                // Another game's success is a hint, never more than "Possible".
+                if s.confidence == Confidence::Unsure {
+                    s.confidence = Confidence::Possible;
+                }
             }
         }
     }
@@ -1043,6 +1119,15 @@ pub fn gather(
         .collect();
     let proton_log = crate::evidence::proton_log(paths, &game.app_id)
         .and_then(|(p, _)| crate::fsutil::read_capped(&p, 500, 4000));
+    let proton_layer = proton_log.as_deref().and_then(|l| {
+        if l.contains("d3d12.dll") || l.contains("vkd3d") {
+            Some("vkd3d".to_string())
+        } else if l.contains("dxgi.dll") || l.contains("d3d11.dll") || l.contains("dxvk") {
+            Some("dxvk".to_string())
+        } else {
+            None
+        }
+    });
     let unity_logs = ctx.steam.unity_logs(game);
     let mut log_findings: Vec<String> = Vec::new();
     for text in proton_log.iter().cloned().chain(
@@ -1063,6 +1148,7 @@ pub fn gather(
         .and_then(|p| crate::fsutil::read_capped(p, 400, 400))
         .map(|t| crate::insights::unity_info(&t, &game.name));
     let sessions = crashmatch::parse_steam_sessions(&ctx.steam.console_logs());
+    let events_for_switch = events.clone();
     let crash_refs: Vec<&CrashEvent> = events.iter().collect();
     let working = crate::insights::working_games(&sessions, &crash_refs, &game.app_id, 60, now)
         .into_iter()
@@ -1090,12 +1176,14 @@ pub fn gather(
         game_updated: game
             .last_updated
             .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
-            .map(|t| t.naive_local()),
+            // Steam stores the time in UTC; everything else here is the PC's own clock.
+            .map(|t| t.with_timezone(&chrono::Local).naive_local()),
         events,
         names,
         layers: vklayers::detect(&paths.home),
         driver_updates: crate::evidence::read_driver_updates(),
         log_findings,
+        proton_layer,
         has_proton_log: proton_log.is_some(),
         is_unity: !unity_logs.is_empty(),
         uses_proton: ctx.steam.compatdata(game).is_some()
@@ -1111,7 +1199,9 @@ pub fn gather(
         switched_at: crate::compat::switched_at(ctx, &game.app_id),
         notes: crate::notes::load(paths, &game.app_id),
         now: None,
-        worked_elsewhere: worked_elsewhere(ctx, &game.app_id),
+        worked_elsewhere: worked_elsewhere(ctx, game),
+        tries: crate::tries::load(paths, &game.app_id),
+        nvidia_switch_helped: nvidia_switch_helped(ctx, &events_for_switch),
         unity,
         anti_cheat: crate::insights::anti_cheat(&game.app_id, &game.install_dir),
         working,
@@ -1386,6 +1476,23 @@ pub struct Insights {
     /// Text for NVIDIA's forum, when the NVIDIA report is suggested.
     pub nvidia_report: Option<String>,
     pub shader_cache_aside: bool,
+    /// Everything CachyPlay applies to this game right now, each with its own Undo.
+    pub applied: Vec<AppliedItem>,
+    /// Changes made since the game last started (to warn before stacking another).
+    pub changed_since_start: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AppliedItem {
+    /// "fix", "settings", "proton", "shader_cache"
+    pub kind: &'static str,
+    pub id: String,
+    pub label: String,
+    /// "Nov 25 21:31"
+    pub since: String,
+    /// The game's log or a crash says it made things worse.
+    pub worse: Option<String>,
+    pub temporary: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1398,21 +1505,91 @@ pub struct LayerInfo {
     pub trusted: bool,
 }
 
-/// Fixes that worked for other games here: the player said so, or the game has run 15+ minutes
-/// since without a graphics crash.
-fn worked_elsewhere(ctx: &crate::manage::Ctx, this: &str) -> Vec<(String, String)> {
+/// Games here that run once NVIDIA's raw access chains are off: the fix is on, they've played 2+
+/// minutes since, and they haven't crashed since.
+fn nvidia_switch_helped(ctx: &crate::manage::Ctx, events: &[CrashEvent]) -> Vec<String> {
+    let launches = crate::evidence::all_launches(&ctx.paths);
+    let mut out = Vec::new();
+    for app in crate::fixes::games_with_fixes(&ctx.paths) {
+        let Some(f) = crate::fixes::load(&ctx.paths, &app)
+            .fixes
+            .into_iter()
+            .find(|f| f.id == "nvidia_raw_access_chains")
+        else {
+            continue;
+        };
+        let Some(on) = chrono::DateTime::parse_from_rfc3339(&f.applied_at)
+            .ok()
+            .map(|d| d.naive_local())
+        else {
+            continue;
+        };
+        let played = launches
+            .iter()
+            .any(|l| l.app_id == app && l.started_at > f.applied_at && l.runtime_secs >= 120.0);
+        let crashed = events
+            .iter()
+            .any(|e| e.app_id.as_deref() == Some(app.as_str()) && e.at > on);
+        if played && !crashed {
+            out.push(ctx.steam.find_game(&app).map(|g| g.name).unwrap_or(app));
+        }
+    }
+    out
+}
+
+fn unity_of(
+    ctx: &crate::manage::Ctx,
+    game: &crate::steam::Game,
+) -> Option<crate::insights::UnityInfo> {
+    ctx.steam
+        .unity_logs(game)
+        .first()
+        .and_then(|p| crate::fsutil::read_capped(p, 400, 200))
+        .map(|t| crate::insights::unity_info(&t, &game.name))
+}
+
+/// Fixes that worked for a *similar* game here: (game name, fix id, why they're similar). One fix
+/// rarely fixes every game: a graphics-mode fix only carries over between games on the same
+/// Unity version and default graphics mode, and a translation-layer fix only between games using
+/// the same graphics mode and hitting the same NVIDIA error. Anything else isn't mentioned.
+fn worked_elsewhere(
+    ctx: &crate::manage::Ctx,
+    game: &crate::steam::Game,
+) -> Vec<(String, String, String)> {
     let paths = &ctx.paths;
     let launches = crate::evidence::all_launches(paths);
+    let now = chrono::Local::now().naive_local();
+    let events =
+        crate::evidence::crash_events(paths, Some(ctx), &crate::evidence::kernel_logs(), now);
+    let hangs = |app: &str| {
+        events.iter().any(|e| {
+            e.app_id.as_deref() == Some(app) && e.faults.iter().any(|f| f.xid == Some(109))
+        })
+    };
+    let me = unity_of(ctx, game);
+    let major = |u: &crate::insights::UnityInfo| {
+        u.engine
+            .as_deref()
+            .map(|e| e.split('.').next().unwrap_or(e).to_string())
+    };
+    // The mode a game runs in by itself (before any forcing): a forced log doesn't say, so assume
+    // Unity's default on Windows.
+    let default_mode = |u: &crate::insights::UnityInfo| {
+        if u.forced {
+            "Direct3D 11".to_string()
+        } else {
+            u.graphics.clone().unwrap_or_default()
+        }
+    };
     let mut out = Vec::new();
     for app in crate::fixes::games_with_fixes(paths)
         .into_iter()
-        .filter(|a| a != this)
+        .filter(|a| *a != game.app_id)
     {
-        let name = ctx
-            .steam
-            .find_game(&app)
-            .map(|g| g.name)
-            .unwrap_or_else(|| app.clone());
+        let Some(other) = ctx.steam.find_game(&app) else {
+            continue;
+        };
+        let them = unity_of(ctx, &other);
         for f in crate::fixes::load(paths, &app)
             .fixes
             .into_iter()
@@ -1421,9 +1598,34 @@ fn worked_elsewhere(ctx: &crate::manage::Ctx, this: &str) -> Vec<(String, String
             let ran = launches
                 .iter()
                 .filter(|l| l.app_id == app && l.started_at > f.applied_at && !l.running)
-                .any(|l| !l.failed && l.runtime_secs >= history::PLAYED as f64);
-            if f.verdict == Some(true) || (f.verdict.is_none() && ran) {
-                out.push((name.clone(), f.id));
+                .any(|l| l.runtime_secs >= history::PLAYED as f64);
+            if !(f.verdict == Some(true) || (f.verdict.is_none() && ran)) {
+                continue;
+            }
+            let similar = match f.id.as_str() {
+                "unity_d3d12" | "unity_vulkan" => match (&me, &them) {
+                    (Some(a), Some(b))
+                        if major(a).is_some()
+                            && major(a) == major(b)
+                            && default_mode(a) == default_mode(b) =>
+                    {
+                        Some(format!(
+                            "also Unity {}, same default graphics mode",
+                            major(a).unwrap_or_default()
+                        ))
+                    }
+                    _ => None,
+                },
+                "nvidia_raw_access_chains" => {
+                    let mode =
+                        |u: &Option<crate::insights::UnityInfo>| u.as_ref().map(default_mode);
+                    (hangs(&game.app_id) && hangs(&app) && mode(&me) == mode(&them))
+                        .then(|| "same NVIDIA Xid 109 hang, same graphics mode".to_string())
+                }
+                _ => None,
+            };
+            if let Some(why) = similar {
+                out.push((other.name.clone(), f.id, why));
             }
         }
     }
@@ -1433,11 +1635,100 @@ fn worked_elsewhere(ctx: &crate::manage::Ctx, this: &str) -> Vec<(String, String
 pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights {
     let ev = gather(ctx, game, &crate::evidence::kernel_logs());
     let suggestions = suggest(&ev);
+    // Remember what CachyPlay saw fail, so it stays ruled out after Undo.
+    for s in suggestions
+        .iter()
+        .filter(|s| s.status == Status::DidntHelp && !s.try_again)
+    {
+        let active = ev
+            .fixes
+            .fixes
+            .iter()
+            .any(|f| Some(&f.id) == s.fix.as_ref().map(|x| &x.id));
+        if active {
+            let why = s
+                .why
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "It crashed again with this on.".into());
+            let _ = crate::tries::rule_out(&ctx.paths, &game.app_id, &s.id, &s.title, &why);
+        }
+    }
+    let parse = |t: &str| {
+        chrono::DateTime::parse_from_rfc3339(t)
+            .ok()
+            .map(|d| d.naive_local())
+    };
+    let mut applied: Vec<AppliedItem> = ev
+        .fixes
+        .fixes
+        .iter()
+        .map(|f| AppliedItem {
+            kind: match f.id.as_str() {
+                crate::fixes::YOUR_SETTINGS => "settings",
+                "shader_cache" => "shader_cache",
+                _ => "fix",
+            },
+            id: f.id.clone(),
+            label: f.label.clone(),
+            since: parse(&f.applied_at)
+                .map(|d| d.format("%b %-d %H:%M").to_string())
+                .unwrap_or_default(),
+            worse: suggestions
+                .iter()
+                .find(|s| {
+                    s.fix.as_ref().is_some_and(|x| x.id == f.id) && s.status == Status::DidntHelp
+                })
+                .and_then(|s| s.why.first().cloned()),
+            temporary: f.temporary,
+        })
+        .collect();
+    if let Some(tool) = &ev.switched_tool {
+        applied.push(AppliedItem {
+            kind: "proton",
+            id: format!("proton:{tool}"),
+            label: format!("Switch to {}", crate::compat::friendly(tool)),
+            since: ev
+                .switched_at
+                .map(|d| d.format("%b %-d %H:%M").to_string())
+                .unwrap_or_default(),
+            worse: None,
+            temporary: false,
+        });
+    }
+    let last_start = ev
+        .sessions
+        .iter()
+        .filter(|x| x.app_id == game.app_id)
+        .map(|x| x.start)
+        .max();
+    let changed_since_start: Vec<String> = ev
+        .tries
+        .tries
+        .iter()
+        .filter(|t| {
+            t.off_at.is_none() && t.on().is_some_and(|on| last_start.is_none_or(|s| on > s))
+        })
+        .map(|t| t.label.clone())
+        .collect();
     let summary = summary(&ev, &suggestions);
     let (gpu, driver) = crate::outreach::gpu_and_driver();
+    // "Share that this worked" once a fix has really proved itself: "Works with a fix", or the
+    // player confirmed it.
+    let prog = crate::progress::progress(&ev, ev.now());
+    let proven = |s: &Suggestion| {
+        let fixed = s.fix.as_ref();
+        fixed.is_some_and(|f| {
+            ev.fixes
+                .fixes
+                .iter()
+                .any(|x| x.id == f.id && x.verdict == Some(true))
+        }) || (prog.stage == crate::progress::Stage::WorksWithFix
+            && fixed.is_some_and(|f| prog.headline.contains(&f.label)))
+    };
     let share_urls = suggestions
         .iter()
-        .filter(|s| s.status == Status::Worked)
+        .filter(|s| s.status == Status::Worked && proven(s))
         .map(|s| {
             (
                 s.id.clone(),
@@ -1498,6 +1789,8 @@ pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights
                 )
             }),
         shader_cache_aside: crate::shadercache::has_aside(game),
+        applied,
+        changed_since_start,
         progress: crate::progress::progress(&ev, ev.now()),
         timeline: crate::progress::timeline(&ev, ev.now(), 10),
         summary,
@@ -1542,6 +1835,108 @@ pub fn apply_suggestion(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_applied_change_is_listed_with_undo() {
+        let f = crate::testutil::FakeSteam::new();
+        let ctx = f.ctx();
+        let g = ctx.steam.find_game("1240440").unwrap();
+        crate::fixes::apply(
+            &ctx.paths,
+            "1240440",
+            fix(
+                "unity_d3d12",
+                "Start in Direct3D 12",
+                &[],
+                &["-force-d3d12"],
+                false,
+            ),
+        )
+        .unwrap();
+        crate::fixes::set_your_settings(&ctx.paths, "1240440", "VKD3D_CONFIG=no_upload_hvv")
+            .unwrap();
+        let ins = insights(&ctx, &g);
+        let ids: Vec<&str> = ins.applied.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            ids.contains(&"unity_d3d12") && ids.contains(&"your_settings"),
+            "{ids:?}"
+        );
+        // Both went on since the last start: stacking another should be warned about.
+        assert_eq!(
+            ins.changed_since_start.len(),
+            2,
+            "{:?}",
+            ins.changed_since_start
+        );
+        // Undoing because it made things worse keeps it crossed off.
+        crate::tries::record_off(&ctx.paths, "1240440", "unity_d3d12", Some("worse")).unwrap();
+        crate::fixes::remove(&ctx.paths, "1240440", "unity_d3d12").unwrap();
+        let ins = insights(&ctx, &g);
+        assert!(!ins.applied.iter().any(|a| a.id == "unity_d3d12"));
+        assert!(
+            ins.find_cause
+                .ruled_out
+                .iter()
+                .any(|r| r.contains("Direct3D 12")),
+            "{:?}",
+            ins.find_cause.ruled_out
+        );
+    }
+
+    #[test]
+    fn a_forced_mode_that_breaks_the_game_stays_visible_and_ruled_out() {
+        // SHRED A BILLION, Nov 25: "Start in Direct3D 12" gave a black screen. The game's log then
+        // said Direct3D 12, so the suggestion (and its Undo) used to disappear.
+        let log = "Initialize engine version: 6000.0.74f1\nForcing GfxDevice: Direct3D 12\nKernel 'MainUploadScatterInstances' not found\n";
+        let mut ev = Evidence {
+            app_id: "5472080".into(),
+            game_name: "SHRED A BILLION".into(),
+            uses_proton: true,
+            unity: Some(crate::insights::unity_info(log, "SHRED A BILLION")),
+            ..Default::default()
+        };
+        ev.fixes.fixes.push(fix(
+            "unity_d3d12",
+            "Start in Direct3D 12",
+            &[],
+            &["-force-d3d12"],
+            false,
+        ));
+        let out = suggest(&ev);
+        let d3d12 = out
+            .iter()
+            .find(|s| s.id == "unity_d3d12")
+            .expect("still listed while it's on");
+        assert_eq!(d3d12.status, Status::DidntHelp);
+        assert!(
+            d3d12.why[0].contains("MainUploadScatterInstances"),
+            "{:?}",
+            d3d12.why
+        );
+        // After Undo, the try is remembered: still listed, still ruled out, with "Try again".
+        ev.fixes.fixes.clear();
+        ev.unity = Some(crate::insights::unity_info(
+            "Version:  Direct3D 11.0 [level 11.1]\n",
+            "SHRED A BILLION",
+        ));
+        ev.tries.tries.push(crate::tries::Try {
+            id: "unity_d3d12".into(),
+            label: "Try the game's Direct3D 12 mode".into(),
+            on_at: "2026-11-25T21:07:07-08:00".into(),
+            off_at: Some("2026-11-25T21:30:00-08:00".into()),
+            off_reason: None,
+            ruled_out: Some("Black screen: the game doesn't include Direct3D 12.".into()),
+        });
+        let out = suggest(&ev);
+        let d3d12 = out.iter().find(|s| s.id == "unity_d3d12").unwrap();
+        assert_eq!(d3d12.status, Status::DidntHelp);
+        assert!(d3d12.try_again);
+        assert!(
+            d3d12.why[0].starts_with("Ruled out for this game (Nov 25): Black screen"),
+            "{:?}",
+            d3d12.why
+        );
+    }
+
     use super::*;
     use crate::crashmatch::{at, parse_kernel_faults, parse_steam_sessions};
 
@@ -1721,8 +2116,30 @@ mod tests {
         assert_eq!(suggest(&ev)[0].status, Status::DidntHelp);
         assert!(!suggest(&ev)[0].ask_verdict);
         ev.fixes.fixes[0].verdict = None;
+        // Closing early without a crash proves nothing: the player may have closed it.
         ev.launches.push(rec("2026-11-23T20:00:00-08:00", true));
-        assert_eq!(suggest(&ev)[0].status, Status::DidntHelp);
+        assert_eq!(suggest(&ev)[0].status, Status::Worked);
+        // Undone after it made things worse: stays ruled out for this game.
+        let saved = ev.fixes.clone();
+        ev.fixes.fixes.clear();
+        ev.tries.tries.push(crate::tries::Try {
+            id: saved.fixes[0].id.clone(),
+            label: saved.fixes[0].label.clone(),
+            on_at: "2026-11-23T18:00:00-08:00".into(),
+            off_at: Some("2026-11-23T20:10:00-08:00".into()),
+            off_reason: Some("worse".into()),
+            ruled_out: Some("You undid it because it made things worse.".into()),
+        });
+        assert_eq!(
+            suggest(&ev)
+                .iter()
+                .find(|x| x.id == saved.fixes[0].id)
+                .unwrap()
+                .status,
+            Status::DidntHelp
+        );
+        ev.tries.tries.clear();
+        ev.fixes = saved;
         // Ran on the built-in chip last time: say so near the top.
         ev.launches.push(LaunchRecord {
             gpu: Some("the built-in AMD graphics chip".into()),
@@ -1891,6 +2308,7 @@ mod tests {
             forced: true,
             frame_generation: true,
             version: Some("1.0.6".into()),
+            ..Default::default()
         });
         ev.working = vec![crate::insights::WorkingGame {
             app_id: "1091500".into(),
@@ -1931,6 +2349,7 @@ mod tests {
             forced: true,
             frame_generation: true,
             version: None,
+            ..Default::default()
         });
         let s = suggest(&ev);
         let sum = summary(&ev, &s);
@@ -1964,6 +2383,7 @@ mod tests {
             forced: true,
             frame_generation: true,
             version: Some("1.0.6".into()),
+            ..Default::default()
         });
         let t = crate::outreach::developer_report(
             &ev,
@@ -2003,6 +2423,7 @@ mod tests {
             forced: true,
             frame_generation: false,
             version: None,
+            ..Default::default()
         });
         ev.fixes.fixes.push(fix(
             "unity_d3d12",

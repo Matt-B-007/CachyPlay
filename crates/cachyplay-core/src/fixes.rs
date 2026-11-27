@@ -136,6 +136,14 @@ pub fn set_your_settings(paths: &Paths, app_id: &str, text: &str) -> Result<Opti
         verdict: None,
     };
     let mut all = load(paths, app_id);
+    if all
+        .fixes
+        .iter()
+        .any(|f| f.id == YOUR_SETTINGS && f.label != fix.label)
+    {
+        let _ = crate::tries::record_off(paths, app_id, YOUR_SETTINGS, Some("testing"));
+    }
+    let _ = crate::tries::record_on(paths, app_id, YOUR_SETTINGS, &fix.label);
     all.fixes.retain(|f| f.id != YOUR_SETTINGS);
     all.fixes.push(fix.clone());
     write_json(&path(paths, app_id), &all)?;
@@ -154,6 +162,9 @@ pub fn apply(paths: &Paths, app_id: &str, mut fix: Fix) -> Result<()> {
         bail!("invalid game argument");
     }
     fix.applied_at = now();
+    if !fix.temporary {
+        let _ = crate::tries::record_on(paths, app_id, &fix.id, &fix.label);
+    }
     let mut all = load(paths, app_id);
     all.fixes.retain(|f| f.id != fix.id);
     all.fixes.push(fix);
@@ -161,6 +172,7 @@ pub fn apply(paths: &Paths, app_id: &str, mut fix: Fix) -> Result<()> {
 }
 
 pub fn remove(paths: &Paths, app_id: &str, id: &str) -> Result<bool> {
+    let _ = crate::tries::record_off(paths, app_id, id, None);
     let mut all = load(paths, app_id);
     let before = all.fixes.len();
     all.fixes.retain(|f| f.id != id);

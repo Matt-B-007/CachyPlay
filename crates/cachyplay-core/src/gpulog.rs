@@ -8,7 +8,7 @@ use chrono::NaiveDateTime;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -17,17 +17,12 @@ const HEADER: &str = "timestamp, temperature.gpu, power.draw [W], clocks.current
 const TS: &str = "%Y/%m/%d %H:%M:%S%.3f";
 
 pub struct Recorder {
-    child: Option<Child>,
     stop: Arc<AtomicBool>,
 }
 
 impl Recorder {
-    pub fn stop(mut self) {
+    pub fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(c) = self.child.as_mut() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
     }
 }
 
@@ -81,24 +76,37 @@ pub fn start(paths: &Paths, app_id: &str, started_at: &str) -> Option<Recorder> 
         .clone();
     let stop = Arc::new(AtomicBool::new(false));
     if card.vendor == "nvidia" && on_path("nvidia-smi") {
-        let mut f = fs::File::create(&path).ok()?;
-        f.write_all(HEADER.as_bytes()).ok()?;
-        let child = Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=timestamp,temperature.gpu,power.draw,clocks.gr,clocks.mem",
-                "--format=csv,noheader",
-                "-l",
-                "2",
-            ])
-            .stdout(Stdio::from(f))
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .spawn()
+        // One short query every 2 seconds from a thread, not a long-running nvidia-smi: if the
+        // launch helper is stopped, nothing is left running.
+        let flag = stop.clone();
+        std::thread::Builder::new()
+            .name("gpulog".into())
+            .spawn(move || {
+                let Ok(mut f) = fs::File::create(&path) else {
+                    return;
+                };
+                let _ = f.write_all(HEADER.as_bytes());
+                for _ in 0..(6 * 3600 / 2) {
+                    if flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Ok(out) = Command::new("nvidia-smi")
+                        .args([
+                            "--query-gpu=timestamp,temperature.gpu,power.draw,clocks.gr,clocks.mem",
+                            "--format=csv,noheader",
+                            "--id=0",
+                        ])
+                        .stdin(Stdio::null())
+                        .stderr(Stdio::null())
+                        .output()
+                    {
+                        let _ = f.write_all(&out.stdout);
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            })
             .ok()?;
-        return Some(Recorder {
-            child: Some(child),
-            stop,
-        });
+        return Some(Recorder { stop });
     }
     // AMD (and Intel cards with hwmon): read the sensor files ourselves.
     let hw = fs::read_dir(
@@ -143,7 +151,7 @@ pub fn start(paths: &Paths, app_id: &str, started_at: &str) -> Option<Recorder> 
             }
         })
         .ok()?;
-    Some(Recorder { child: None, stop })
+    Some(Recorder { stop })
 }
 
 #[derive(Debug, Clone, PartialEq)]

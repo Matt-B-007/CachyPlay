@@ -604,6 +604,54 @@ fn undo_fix(app_id: String, id: String) -> CmdResult<String> {
     }
 }
 
+/// Undo one applied change, saying why: "worse" or "didnt_help" rule it out for this game,
+/// "testing" doesn't.
+#[tauri::command]
+fn undo_change(app_id: String, id: String, reason: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let reason = Some(reason.as_str()).filter(|r| ["worse", "didnt_help", "testing"].contains(r));
+    let _ = cachyplay_core::tries::record_off(&p, &app_id, &id, reason);
+    let msg = if id.starts_with("proton:") {
+        if cachyplay_core::live::steam_state(&c.proc_root)
+            != cachyplay_core::live::SteamState::Closed
+        {
+            let g = game_of(&c, &app_id)?;
+            let what = cachyplay_core::live::Action::UndoTool {
+                app_id: app_id.clone(),
+            };
+            cachyplay_core::live::enqueue(&p, what).map_err(|e| format!("{e:#}"))?;
+            return Ok(format!(
+                "{}'s Proton version goes back when Steam closes.",
+                g.name
+            ));
+        }
+        cachyplay_core::compat::undo(&c, &app_id).map_err(|e| format!("{e:#}"))?;
+        "Proton version put back.".to_string()
+    } else if id == "shader_cache" {
+        let g = game_of(&c, &app_id)?;
+        if cachyplay_core::shadercache::has_aside(&g) {
+            cachyplay_core::shadercache::undo(&c, &g).map_err(|e| format!("{e:#}"))?;
+        }
+        cachyplay_core::fixes::remove(&p, &app_id, &id).map_err(|e| format!("{e:#}"))?;
+        "Old shader cache put back.".to_string()
+    } else {
+        cachyplay_core::fixes::remove(&p, &app_id, &id).map_err(|e| format!("{e:#}"))?;
+        "Undone. The game starts without it next time.".to_string()
+    };
+    Ok(match reason {
+        Some("worse") | Some("didnt_help") => format!("{msg} It's crossed off for this game."),
+        _ => msg,
+    })
+}
+
+/// "Try again": offer a ruled-out change once more.
+#[tauri::command]
+fn try_again(app_id: String, id: String) -> CmdResult<()> {
+    let p = paths()?;
+    cachyplay_core::tries::try_again(&p, &app_id, &id).map_err(|e| format!("{e:#}"))
+}
+
 /* ---------- game page: summary, fixes, history, help ---------- */
 
 fn game_of(c: &Ctx, app_id: &str) -> CmdResult<cachyplay_core::steam::Game> {
@@ -895,6 +943,8 @@ fn main() {
             open_steam,
             set_your_settings,
             reset_shader_cache,
+            undo_change,
+            try_again,
             undo_shader_cache,
             set_run_note,
             set_online_only,

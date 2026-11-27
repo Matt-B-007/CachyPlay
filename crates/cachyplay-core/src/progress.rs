@@ -173,10 +173,42 @@ fn change(ev: &Evidence) -> Option<(String, NaiveDateTime)> {
         .max_by_key(|x| x.1);
     if let (Some(tool), Some(at)) = (&ev.switched_tool, ev.switched_at) {
         if best.as_ref().is_none_or(|b| at > b.1) {
-            best = Some((format!("Switch to {tool}"), at));
+            best = Some((format!("Switch to {}", crate::compat::friendly(tool)), at));
         }
     }
     best
+}
+
+/// Every change made between the last start before the newest change and now. More than one means
+/// CachyPlay can't tell which one helped.
+fn changes_together(ev: &Evidence, newest: NaiveDateTime) -> Vec<String> {
+    let parse = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.naive_local())
+    };
+    let since = ev
+        .sessions
+        .iter()
+        .filter(|s| s.app_id == ev.app_id && s.start < newest)
+        .map(|s| s.start)
+        .max();
+    let after = |t: NaiveDateTime| since.is_none_or(|s| t > s);
+    let mut v: Vec<(NaiveDateTime, String)> = ev
+        .fixes
+        .fixes
+        .iter()
+        .filter(|f| !f.temporary)
+        .filter_map(|f| Some((parse(&f.applied_at)?, f.label.clone())))
+        .filter(|(t, _)| after(*t))
+        .collect();
+    if let (Some(tool), Some(at)) = (&ev.switched_tool, ev.switched_at) {
+        if after(at) {
+            v.push((at, format!("Switch to {}", crate::compat::friendly(tool))));
+        }
+    }
+    v.sort();
+    v.into_iter().map(|x| x.1).collect()
 }
 
 pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
@@ -215,7 +247,7 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
         .collect();
     let clean_secs: i64 = ended_after
         .iter()
-        .filter(|s| !s.bad() && counts_mode(s) && s.secs().unwrap_or(0) >= history::SHORT)
+        .filter(|s| !s.bad() && counts_mode(s) && s.secs().unwrap_or(0) >= 15)
         .filter_map(|s| s.secs())
         .sum();
     let ask_online = online_only
@@ -251,11 +283,22 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
     };
 
     if let Some((label, at)) = &changed {
+        let together = changes_together(ev, *at);
+        let shown = if together.len() > 1 {
+            format!(
+                "{} changes at once ({})",
+                together.len(),
+                together.join(", ")
+            )
+        } else {
+            label.clone()
+        };
+        let label = &shown;
         let verdict = ev
             .fixes
             .fixes
             .iter()
-            .find(|f| &f.label == label)
+            .find(|f| Some(&f.label) == changed.as_ref().map(|c| &c.0))
             .and_then(|f| f.verdict);
         let bad_after = after.iter().filter(|s| s.bad()).count();
         if verdict == Some(false) {
@@ -527,13 +570,44 @@ pub fn timeline(ev: &Evidence, now: NaiveDateTime, limit: usize) -> Vec<Item> {
             .ok()
             .map(|d| d.naive_local())
     };
-    for f in &ev.fixes.fixes {
+    // On and off, from the record of tries (undone changes included).
+    for t in &ev.tries.tries {
+        let what = if t.id.starts_with("proton:") {
+            "proton"
+        } else {
+            "fix"
+        };
+        if let Some(on) = t.on() {
+            events.push((on, what, format!("Turned on: {}", t.label)));
+        }
+        if let Some(off) = t.off() {
+            let why = match t.off_reason.as_deref() {
+                Some("worse") => " (it made things worse)",
+                Some("didnt_help") => " (it didn't help)",
+                _ => "",
+            };
+            events.push((off, "off", format!("Turned off: {}{why}", t.label)));
+        }
+    }
+    // Changes from before the record existed.
+    for f in ev
+        .fixes
+        .fixes
+        .iter()
+        .filter(|f| !ev.tries.tries.iter().any(|t| t.id == f.id))
+    {
         if let Some(t) = parse(&f.applied_at) {
             events.push((t, "fix", format!("Turned on: {}", f.label)));
         }
     }
     if let (Some(tool), Some(at)) = (&ev.switched_tool, ev.switched_at) {
-        events.push((at, "proton", format!("Switched to {tool}")));
+        if !ev.tries.tries.iter().any(|t| t.id.starts_with("proton:")) {
+            events.push((
+                at,
+                "proton",
+                format!("Switched to {}", crate::compat::friendly(tool)),
+            ));
+        }
     }
     for u in &ev.driver_updates {
         events.push((
@@ -575,6 +649,28 @@ pub fn timeline(ev: &Evidence, now: NaiveDateTime, limit: usize) -> Vec<Item> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn several_changes_at_once_are_named_and_short_runs_add_up() {
+        let mut ev = with_fix(halo(), "2026-11-25 19:00:00");
+        ev.fixes.fixes.push(Fix {
+            id: "shader_cache".into(),
+            label: "Fresh shader cache".into(),
+            applied_at: "2026-11-25T19:01:00-08:00".into(),
+            ..Default::default()
+        });
+        let p = progress(&ev, t(NOW));
+        assert!(
+            p.headline
+                .contains("2 changes at once (Start in Direct3D 12, Fresh shader cache)"),
+            "{}",
+            p.headline
+        );
+        // SHRED: a 170-second clean start counts its real time.
+        ev.sessions.push(session("2026-11-25 20:00:00", 3));
+        let p = progress(&ev, t(NOW));
+        assert_eq!(p.clean_secs, 180);
+    }
+
     use super::*;
     use crate::crashmatch::{CrashEvent, GpuFault};
     use crate::fixes::{Fix, GameFixes};

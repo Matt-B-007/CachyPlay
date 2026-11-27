@@ -727,3 +727,42 @@ fn resets_a_games_windows_files_and_puts_them_back() {
         "{kept:?}"
     );
 }
+
+#[test]
+fn one_start_fixes_come_off_when_the_start_begins() {
+    // The detailed Proton log is for one start. It used to come off only when the game ended, so
+    // it stayed on whenever Steam stopped the game first.
+    let f = FakeSteam::new();
+    let fixes_dir = f.home().join(".local/share/cachyplay/fixes");
+    fs::create_dir_all(&fixes_dir).unwrap();
+    fs::write(
+        fixes_dir.join("1240440.json"),
+        r#"{"app_id":"1240440","fixes":[{"id":"capture_proton_log","label":"Detailed Proton log (temporary)","env":{"PROTON_LOG":"1"},"args":[],"applied_at":"2026-11-25T21:09:05-08:00","temporary":true}]}"#,
+    )
+    .unwrap();
+    let game = f.home().join("probe-game");
+    fs::write(
+        &game,
+        "#!/bin/sh\necho \"log:${PROTON_LOG:-none}\" > \"$OUT\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&game, fs::Permissions::from_mode(0o755)).unwrap();
+    let out_file = f.home().join("probe.out");
+    let o = cmd(&f, &["run", "--", game.to_str().unwrap()])
+        .env("CACHYPLAY_DEV", "1")
+        .env("SteamAppId", "1240440")
+        .env("OUT", &out_file)
+        .output_fresh()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        fs::read_to_string(&out_file).unwrap().trim(),
+        "log:1",
+        "used for this start"
+    );
+    let left = fs::read_to_string(fixes_dir.join("1240440.json")).unwrap_or_default();
+    assert!(
+        !left.contains("capture_proton_log"),
+        "and taken off: {left}"
+    );
+}

@@ -70,6 +70,22 @@ fn newest_in(dir: &Path) -> (u128, usize) {
     (best, n)
 }
 
+fn sessions_fingerprint(ctx: &Ctx) -> u128 {
+    let sessions = crate::crashmatch::parse_steam_sessions(&ctx.steam.console_logs());
+    let mut h: u128 = sessions.len() as u128;
+    for s in sessions.iter().rev().take(5) {
+        h = h
+            .wrapping_mul(31)
+            .wrapping_add(s.start.and_utc().timestamp() as u128);
+        h = h.wrapping_mul(31).wrapping_add(
+            s.end
+                .map(|e| e.and_utc().timestamp() as u128 + 1)
+                .unwrap_or(0),
+        );
+    }
+    h
+}
+
 /// A fingerprint of everything the game pages are built from. When it changes, refresh.
 pub fn token(ctx: &Ctx) -> String {
     let p = &ctx.paths;
@@ -77,7 +93,9 @@ pub fn token(ctx: &Ctx) -> String {
     let parts = [
         launches,
         n as u128,
-        stamp(&ctx.steam.root.join("logs/console_log.txt")),
+        // Not the console log's time: Steam writes to it constantly. Only games starting and
+        // ending (the session list) count.
+        sessions_fingerprint(ctx),
         stamp(&ctx.steam.localconfig_path(&ctx.account.account_id)),
         stamp(&p.state.join("gpu-crash-lines.log")),
         newest_in(&p.data.join("fixes")).0,
@@ -223,6 +241,25 @@ pub fn run_queue(ctx: &Ctx, bin: Option<&Path>) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn steam_writing_its_console_log_alone_doesnt_refresh() {
+        let f = FakeSteam::new();
+        let ctx = f.ctx();
+        let log = ctx.steam.root.join("logs/console_log.txt");
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        fs::write(&log, "[2026-11-25 21:00:00] some chatter\n").unwrap();
+        let before = token(&ctx);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(
+            &log,
+            "[2026-11-25 21:00:00] some chatter\n[2026-11-25 21:00:03] more chatter\n",
+        )
+        .unwrap();
+        assert_eq!(before, token(&ctx), "chatter isn't a change");
+        fs::write(&log, "[2026-11-25 21:00:05] Game process added : AppID 1240440 \"/x\", ProcID 1, IP 0.0.0.0:0\n").unwrap();
+        assert_ne!(before, token(&ctx), "a game starting is");
+    }
+
     use super::*;
     use crate::testutil::FakeSteam;
 

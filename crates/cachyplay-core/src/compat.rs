@@ -149,7 +149,14 @@ pub fn switch(ctx: &Ctx, app_id: &str, tool: &Tool) -> Result<()> {
     });
     rec.set = tool.name.clone();
     rec.at = Some(chrono::Local::now().to_rfc3339());
-    write_json(&p, &rec)
+    write_json(&p, &rec)?;
+    let _ = crate::tries::record_on(
+        &ctx.paths,
+        app_id,
+        &format!("proton:{}", tool.name),
+        &format!("Switch to {}", friendly(&tool.name)),
+    );
+    Ok(())
 }
 
 /// The tool CachyPlay switched this game to, if it did.
@@ -173,6 +180,7 @@ pub fn undo(ctx: &Ctx, app_id: &str) -> Result<()> {
         read_json(&p).context("CachyPlay hasn't changed this game's compatibility tool")?;
     write_mapping(ctx, app_id, rec.previous.as_deref().unwrap_or(""))?;
     fs::remove_file(&p)?;
+    let _ = crate::tries::record_off(&ctx.paths, app_id, &format!("proton:{}", rec.set), None);
     Ok(())
 }
 

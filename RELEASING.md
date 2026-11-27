@@ -40,18 +40,23 @@ Someone on a beta newer than the newest stable who switches to Stable sees **Swi
 - If a beta breaks something, fix forward with the next beta; users can also press
   **Go back to the previous version** in Settings.
 
-## Signing releases (recommended)
+## Signing releases (required from beta.15)
 
-Checksums prove a download wasn't damaged; a signature proves it came from you. Once set up,
-CachyPlay refuses any update that isn't signed with your key.
+Every release is signed with minisign; the Release workflow refuses to publish without the key.
 
-1. On your PC: `sudo pacman -S minisign`, then `minisign -G -W -p minisign.pub -s minisign.key`
-   (`-W` makes a key without a password, so GitHub can use it).
-2. Copy `minisign.pub` over `packaging/minisign.pub` in the repository and commit it.
-3. In GitHub: Settings → Secrets and variables → Actions → New repository secret named
-   `MINISIGN_KEY`, with the full contents of `minisign.key`. Keep the key file somewhere safe and
-   never commit it.
-4. From the next release on, the workflow attaches `SHA256SUMS.txt.minisig`, and builds that
-   contain your public key only install signed updates.
+- **Two key pairs.** The **primary** secret key is the repository secret `MINISIGN_SECRET_KEY`
+  (made with `minisign -G -W`, no password). The **backup** secret key is kept offline and is only
+  used if the primary is lost or leaked. Both public keys are in `packaging/minisign.pub` (and in
+  `install.sh`), and the app accepts a signature from either.
+- **How a release is published:** build → create a **draft** release → upload the download,
+  `SHA256SUMS`, `SHA256SUMS.minisig` and `install.sh` → publish. Updaters never see a release
+  without its signature, and treat an unsigned one as "not available yet".
+- **Old file names:** `SHA256SUMS.txt` and `SHA256SUMS.txt.minisig` are still uploaded (same
+  content) for beta.14 and earlier, whose updater looks for that name. Drop them once no supported
+  version needs them, and say so in the CHANGELOG.
+- **Changing to the backup key:** put the backup secret into `MINISIGN_SECRET_KEY`, make a new
+  backup pair offline, and replace the old primary public key in `packaging/minisign.pub` and
+  `install.sh` with the new backup's in the next release.
+- If signing fails with a password prompt, the secret key has a password: make it again with `-W`.
 
-Releases made before step 2 stay installable: builds without a key skip the signature check.
+Build provenance attestations are added automatically once the repository is public.

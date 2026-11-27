@@ -11,7 +11,6 @@ use crate::recipes::{self, Facts, Plan};
 use crate::sys;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
-use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::Command;
 use std::time::Instant;
@@ -443,14 +442,7 @@ fn build(command: &[OsString], plan: &Plan, passthrough: bool) -> Command {
 }
 
 pub fn log(paths: &Paths, msg: &str) {
-    let _ = std::fs::create_dir_all(&paths.state);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.log_file())
-    {
-        let _ = writeln!(f, "{} {msg}", now());
-    }
+    crate::logging::write(paths, msg);
 }
 
 /// The most recent launch records for a game, newest first.

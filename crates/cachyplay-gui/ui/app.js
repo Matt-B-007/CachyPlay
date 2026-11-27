@@ -141,6 +141,13 @@ function banners() {
         problems.length === 1 ? problems[0].detail : problems.map((c) => c.title).join(", ") + "."),
       h("button", { class: "secondary", onclick: () => { openSettings(); setTimeout(() => $("set-pc").scrollIntoView({ block: "start" }), 50); } }, "See how to fix")));
   }
+  if (state.lastCrash) {
+    out.push(h("div", { class: "banner warn" },
+      h("p", {}, h("strong", {}, "CachyPlay closed unexpectedly last time"),
+        state.lastCrash.details ? "A crash report was saved. Sending it helps fix the problem." : "It may have been closed by the system or a power cut. A bug report helps if it keeps happening."),
+      h("button", { class: "secondary", onclick: () => { dismissCrash(); saveReport(null); } }, "Report"),
+      h("button", { class: "secondary", onclick: dismissCrash }, "Dismiss")));
+  }
   const sc = o.system_crashes;
   if (sc) {
     out.push(h("div", { class: "banner warn system" },
@@ -193,9 +200,17 @@ function railItem(g) {
       h("span", { class: "rail-status" }, h("span", { class: `light ${g.light}`, "aria-hidden": "true" }), statusText(g))));
 }
 
-async function loadCover(appId) {
+/* Covers come from cover://localhost/<appid>, served straight from Steam's cache (no copying the
+   image through the app). Resolves to the link once the image loads, or null if there's none. */
+function loadCover(appId) {
   if (state.covers.has(appId)) return state.covers.get(appId);
-  const p = invoke("cover", { appId }).catch(() => null);
+  const url = `cover://localhost/${encodeURIComponent(appId)}`;
+  const p = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(url);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
   state.covers.set(appId, p);
   return p;
 }
@@ -1009,56 +1024,101 @@ async function openSteam() {
   }
 }
 
-/* ---------- staying up to date ---------- */
+/* ---------- staying up to date ----------
+   CachyPlay's watcher (in Rust, off the window's thread) sends a "live" event only when something
+   changed: Steam opened or closed, a game started, ended or crashed, or a waiting change ran.
+   Nothing runs here while the window is hidden. */
 state.live = null;
 state.lastLoad = Date.now();
 state.openRuns = new Set();
-async function poll() {
-  let l;
-  try {
-    l = await invoke("live_status");
-  } catch {
-    return;
-  }
+state.pendingRefresh = false;
+
+function blockedByUser() {
+  const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+  return typing || !!document.querySelector("dialog[open]") || state.busy;
+}
+
+async function onLive(l) {
   const prev = state.live;
   state.live = l;
+  for (const x of l.ran || []) toast(x, x.startsWith("Done") ? "success" : "error");
+  if ((l.ran || []).length) toast("Steam is closed and your changes are in.", "success", { label: "Open Steam", run: openSteam });
   if (!prev) return;
-  // Don't redraw under someone who's typing or has a dialog open.
-  const typing = document.activeElement && ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
-  const dialog = document.querySelector("dialog[open]");
-  if (prev.steam !== "closed" && l.steam === "closed" && l.waiting.length) {
-    try {
-      const lines = await invoke("run_waiting");
-      lines.forEach((x) => toast(x, x.startsWith("Done") ? "success" : "error"));
-      toast("Steam is closed and your changes are in.", "success", { label: "Open Steam", run: openSteam });
-    } catch (e) {
-      toast(String(e), "error");
-    }
+  const changed = prev.steam !== l.steam || prev.token !== l.token || (l.ran || []).length > 0
+    || JSON.stringify(prev.waiting) !== JSON.stringify(l.waiting);
+  if (!changed) return;
+  if (document.hidden) { state.pendingRefresh = true; return; }
+  // Don't redraw under someone who's typing or has a dialog open; catch up afterwards.
+  if (blockedByUser()) {
+    state.pendingRefresh = true;
+    if (prev.steam !== l.steam) renderChrome();
+    return;
   }
-  const changed = prev.steam !== l.steam || prev.token !== l.token;
-  if (changed && !typing && !dialog && !state.busy) {
-    // Keep the loaded suggestions on screen while fresh ones load (no empty placeholders).
+  state.pendingRefresh = false;
+  state.lastLoad = Date.now();
+  await load();
+}
+
+function catchUp() {
+  if (state.pendingRefresh && !document.hidden && !blockedByUser()) {
+    state.pendingRefresh = false;
     state.lastLoad = Date.now();
-    await load();
-  } else if (prev.steam !== l.steam) {
-    renderChrome();
-  } else if (!typing && !dialog && Date.now() - state.lastLoad > 60000) {
-    // While a game runs, only the "Playing now, 12 of 18 min" card ticks over.
-    const ins = state.insights.get(state.selected);
-    if (ins?.progress?.playing_secs != null) {
-      state.lastLoad = Date.now();
-      try {
-        const fresh = await invoke("game_insights", { appId: state.selected });
-        state.insights.set(state.selected, fresh);
-        const old = document.querySelector(".card.progress");
-        if (old && state.detail) old.replaceWith(progressCard(state.detail, fresh.progress));
-      } catch {
-        /* next tick */
-      }
-    }
+    load();
   }
 }
-setInterval(poll, 3000);
+
+// While a game runs, only the "Playing now, 12 of 18 min" card ticks over, once a minute.
+async function tickProgress() {
+  if (document.hidden || blockedByUser() || Date.now() - state.lastLoad < 60000) return;
+  const ins = state.insights.get(state.selected);
+  if (ins?.progress?.playing_secs == null) return;
+  state.lastLoad = Date.now();
+  try {
+    const fresh = await invoke("game_insights", { appId: state.selected });
+    state.insights.set(state.selected, fresh);
+    const old = document.querySelector(".card.progress");
+    if (old && state.detail) old.replaceWith(progressCard(state.detail, fresh.progress));
+  } catch {
+    /* next minute */
+  }
+}
+
+function startWatching() {
+  invoke("live_status").then((l) => { state.live = l; }).catch(() => {});
+  window.__TAURI__.event.listen("live", (e) => onLive(e.payload));
+  setInterval(tickProgress, 15000);
+  document.addEventListener("visibilitychange", () => {
+    invoke("set_visible", { visible: !document.hidden }).catch(() => {});
+    if (document.hidden) stopGamepad();
+    else {
+      if (state.settings && state.settings.big_screen) startGamepad();
+      catchUp();
+    }
+  });
+  document.addEventListener("close", () => setTimeout(catchUp, 0), true); // a dialog closed
+  document.addEventListener("focusout", () => setTimeout(catchUp, 0));
+}
+
+async function showLastCrash() {
+  try {
+    state.lastCrash = await invoke("last_crash");
+  } catch {
+    state.lastCrash = null;
+  }
+  if (state.lastCrash) redrawBanners();
+}
+
+function dismissCrash() {
+  state.lastCrash = null;
+  invoke("dismiss_crash").catch(() => {});
+  redrawBanners();
+}
+
+function redrawBanners() {
+  if (!state.overview) return;
+  if (state.detail && state.selected) renderMain();
+  else renderEmptyMain();
+}
 
 async function saveReport(appId) {
   const progress = toast("Saving bug report…");
@@ -1438,7 +1498,7 @@ async function runPcCheck() {
     toast(String(e), "error");
   }
   $("pc-checks").replaceChildren(...sortChecks(state.pcCheck).map(checkItem));
-  if (!$("settings").hidden) return;
+  if (!$("settings").hidden || !state.overview) return; // the game list draws the banner when it loads
   if (state.selected) renderMain(); else renderEmptyMain();
 }
 
@@ -1513,8 +1573,12 @@ async function applyDisplay() {
 /* Big-screen mode: a controller moves around like the arrow keys. A = press, B = back. */
 let gamepadTimer = null;
 const padState = {};
+function stopGamepad() {
+  if (gamepadTimer) clearInterval(gamepadTimer);
+  gamepadTimer = null;
+}
 function startGamepad() {
-  if (gamepadTimer || !navigator.getGamepads) return;
+  if (gamepadTimer || document.hidden || !navigator.getGamepads) return;
   gamepadTimer = setInterval(() => {
     if (!state.settings.big_screen) return;
     for (const pad of navigator.getGamepads()) {
@@ -1736,11 +1800,16 @@ document.addEventListener("keydown", (e) => {
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyDisplay);
 $("search").addEventListener("input", (e) => { state.query = e.target.value.trim().toLowerCase(); renderRail(); });
 
-// Steam may have been opened or closed while CachyPlay was in the background.
-// Suggestions are recomputed too, since a game may have crashed meanwhile.
-window.addEventListener("focus", () => { state.insights.clear(); load(); });
+// Errors in the window go into CachyPlay's log, so a bug report includes them.
+window.addEventListener("error", (e) => {
+  invoke("log_ui_error", { message: `${e.message} (${e.filename}:${e.lineno})` }).catch(() => {});
+});
+window.addEventListener("unhandledrejection", (e) => {
+  invoke("log_ui_error", { message: `unhandled: ${e.reason}` }).catch(() => {});
+});
 
-loadAppSettings().then(load);
+loadAppSettings().then(load).then(showLastCrash);
+startWatching();
 // Check for a newer CachyPlay once at startup (at most once a day online), in the background.
 checkUpdates(true);
 // Quietly check the PC; problems show as a banner.

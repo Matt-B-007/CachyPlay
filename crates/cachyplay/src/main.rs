@@ -92,8 +92,13 @@ enum Cmd {
         /// Tool name (from the list), or `undo`
         tool: Option<String>,
     },
-    /// Check this PC for common gaming problems, and CachyPlay's own setup
-    Doctor,
+    /// Check this PC for common gaming problems, and CachyPlay's own setup (also: --self-test).
+    /// With --quick: only check this program starts and can read its settings (no network)
+    #[command(alias = "self-test")]
+    Doctor {
+        #[arg(long)]
+        quick: bool,
+    },
     /// Set a game's Windows files (Proton prefix) aside so Steam makes fresh ones; --undo puts them back
     ResetPrefix {
         /// A game's AppID, or `all` with --delete-kept
@@ -157,7 +162,7 @@ fn main() -> ExitCode {
             .collect();
         return run_wrapper(rest);
     }
-    match real_main() {
+    match real_main(standard_flags(args)) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("Error: {e:#}");
@@ -189,10 +194,33 @@ fn ctx(paths: &Paths) -> Result<Ctx> {
     Ok(c)
 }
 
-fn real_main() -> Result<ExitCode> {
-    let cli = Cli::parse();
+/// The flags every app in the family accepts, mapped onto CachyPlay's commands:
+/// --self-test [--quick] → doctor, --report [appid] → report, --update → update,
+/// --rollback → update --roll-back, --uninstall → uninstall. (--version is built in.)
+fn standard_flags(mut args: Vec<OsString>) -> Vec<OsString> {
+    let Some(first) = args.get(1).and_then(|a| a.to_str()).map(str::to_string) else {
+        return args;
+    };
+    let replacement: &[&str] = match first.as_str() {
+        "--self-test" => &["doctor"],
+        "--report" => &["report"],
+        "--update" => &["update"],
+        "--rollback" | "--roll-back" => &["update", "--roll-back"],
+        "--uninstall" => &["uninstall"],
+        _ => return args,
+    };
+    args.splice(1..2, replacement.iter().map(OsString::from));
+    args
+}
+
+fn real_main(args: Vec<OsString>) -> Result<ExitCode> {
+    let cli = Cli::parse_from(args);
     let paths = Paths::from_env()?;
-    cachyplay_core::housekeeping::protect_settings(&paths);
+    if let Cmd::Doctor { quick: true } = cli.cmd {
+        // Read-only: skip the settings backup below.
+    } else {
+        cachyplay_core::housekeeping::protect_settings(&paths);
+    }
     match cli.cmd {
         Cmd::List => {
             let c = ctx(&paths)?;
@@ -462,11 +490,26 @@ fn real_main() -> Result<ExitCode> {
             }
             if export {
                 let file = paths.report_dir().join("CachyPlay game settings.txt");
-                std::fs::write(&file, keep::export_text(&games))?;
+                cachyplay_core::fsutil::atomic_write(&file, keep::export_text(&games).as_bytes())?;
                 println!("\nSaved to {}", file.display());
             }
         }
-        Cmd::Doctor => doctor(&paths)?,
+        Cmd::Doctor { quick: true } => {
+            // Must not write anything: the updater runs this on a new version before installing it.
+            match cachyplay_core::selftest::quick(&paths) {
+                Ok(lines) => {
+                    for l in lines {
+                        println!("[ok  ] {l}");
+                    }
+                    println!("Quick self-test passed.");
+                }
+                Err(e) => {
+                    eprintln!("[FAIL] {e:#}");
+                    return Ok(ExitCode::from(1));
+                }
+            }
+        }
+        Cmd::Doctor { quick: false } => doctor(&paths)?,
         Cmd::ResetPrefix {
             app_id,
             undo,
@@ -567,7 +610,10 @@ fn real_main() -> Result<ExitCode> {
                     let games = keep::all(&c);
                     if !games.is_empty() {
                         let file = paths.report_dir().join("CachyPlay game settings.txt");
-                        std::fs::write(&file, keep::export_text(&games))?;
+                        cachyplay_core::fsutil::atomic_write(
+                            &file,
+                            keep::export_text(&games).as_bytes(),
+                        )?;
                         println!("Saved a copy of your game settings to {}", file.display());
                     }
                 }
@@ -933,4 +979,45 @@ fn confirm(q: &str) -> Result<bool> {
     let mut s = String::new();
     std::io::stdin().read_line(&mut s)?;
     Ok(matches!(s.trim(), "y" | "Y" | "yes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(a: &[&str]) -> Vec<String> {
+        standard_flags(a.iter().map(OsString::from).collect())
+            .into_iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn standard_flags_map_to_commands() {
+        assert_eq!(
+            map(&["cachyplay", "--self-test", "--quick"]),
+            ["cachyplay", "doctor", "--quick"]
+        );
+        assert_eq!(
+            map(&["cachyplay", "--rollback"]),
+            ["cachyplay", "update", "--roll-back"]
+        );
+        assert_eq!(
+            map(&["cachyplay", "--report", "1240440"]),
+            ["cachyplay", "report", "1240440"]
+        );
+        assert_eq!(
+            map(&["cachyplay", "--uninstall", "-y"]),
+            ["cachyplay", "uninstall", "-y"]
+        );
+        assert_eq!(map(&["cachyplay", "--update"]), ["cachyplay", "update"]);
+        assert_eq!(map(&["cachyplay", "list"]), ["cachyplay", "list"]);
+        for a in [
+            ["cachyplay", "doctor", "--quick"],
+            ["cachyplay", "self-test", "--quick"],
+        ] {
+            let cli = Cli::try_parse_from(a).unwrap();
+            assert!(matches!(cli.cmd, Cmd::Doctor { quick: true }));
+        }
+    }
 }

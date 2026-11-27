@@ -2,6 +2,7 @@
 
 pub mod advice;
 pub mod compat;
+pub mod crash;
 pub mod crashmatch;
 pub mod diagnose;
 pub mod evidence;
@@ -17,6 +18,7 @@ pub mod keep;
 pub mod launch_options;
 pub mod library;
 pub mod live;
+pub mod logging;
 pub mod manage;
 pub mod notes;
 pub mod obs;
@@ -28,6 +30,7 @@ pub mod progress;
 pub mod protondb;
 pub mod recipes;
 pub mod report;
+pub mod selftest;
 pub mod shadercache;
 pub mod steam;
 pub mod sys;

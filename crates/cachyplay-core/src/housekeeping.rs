@@ -7,8 +7,6 @@ use std::fs;
 
 /// Launch records kept (newest first); older ones are deleted.
 pub const MAX_LAUNCHES: usize = 400;
-/// CachyPlay's own log is rotated past this size.
-pub const MAX_LOG_BYTES: u64 = 1024 * 1024;
 /// Settings backups kept from earlier versions.
 pub const KEEP_CONFIG_BACKUPS: usize = 3;
 
@@ -33,10 +31,7 @@ pub fn trim(paths: &Paths) {
             let _ = fs::remove_file(p);
         }
     }
-    let log = paths.log_file();
-    if fs::metadata(&log).is_ok_and(|m| m.len() > MAX_LOG_BYTES) {
-        let _ = fs::rename(&log, log.with_extension("log.old"));
-    }
+    crate::logging::rotate(paths);
 }
 
 /// Before this version first uses the settings folder, keep a copy of it as written by the
@@ -57,7 +52,7 @@ pub fn protect_settings(paths: &Paths) {
         }
     }
     let _ = fs::create_dir_all(&paths.config);
-    let _ = fs::write(&marker, crate::VERSION);
+    let _ = crate::fsutil::atomic_write(&marker, crate::VERSION.as_bytes());
 }
 
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {

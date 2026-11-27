@@ -19,4 +19,5 @@ cachyplay-core = { path = "../cachyplay-core" }
 tauri = { version = "2.12", features = [] }
 serde.workspace = true
 serde_json.workspace = true
-base64 = "0.23"
+tauri-plugin-single-instance = "2"
+signal-hook = "0.3"

@@ -158,6 +158,14 @@ pub fn find(app_id: &str, config_dir: &Path, data_recipes: &Path) -> Result<Opti
     }
 }
 
+/// Parse every recipe built into this program (used by the quick self-test). Returns how many.
+pub fn check_bundled() -> Result<usize> {
+    for (id, text) in BUNDLED {
+        Recipe::parse(text).with_context(|| format!("built-in recipe {id}"))?;
+    }
+    Ok(BUNDLED.len())
+}
+
 /// Facts about this PC that recipe conditions can test.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {

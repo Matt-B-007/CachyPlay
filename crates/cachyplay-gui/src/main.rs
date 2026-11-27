@@ -1,7 +1,6 @@
 //! CachyPlay desktop app. A thin Tauri shell: every command calls into `cachyplay-core`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use base64::Engine;
 use cachyplay_core::library::{self, GameDetail, Overview};
 use cachyplay_core::manage::{touched_accounts, Ctx, Outcome};
 use cachyplay_core::paths::Paths;
@@ -9,7 +8,10 @@ use cachyplay_core::recipes::Facts;
 use cachyplay_core::{install, report, update};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -30,14 +32,14 @@ fn facts() -> &'static Facts {
     FACTS.get_or_init(Facts::detect)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn overview() -> CmdResult<Overview> {
     let p = paths()?;
     let c = ctx(&p);
     Ok(library::overview(&p, c.as_ref().map_err(Clone::clone)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn game_detail(app_id: String) -> CmdResult<GameDetail> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -48,30 +50,9 @@ fn game_detail(app_id: String) -> CmdResult<GameDetail> {
     Ok(library::detail(&c, &g, facts()))
 }
 
-/// Cover art from Steam's local cache as a data URL (no network, no file-access permission).
-#[tauri::command]
-fn cover(app_id: String) -> Option<String> {
-    let p = paths().ok()?;
-    let c = ctx(&p).ok()?;
-    let file = library::cover_art(&c.steam.root, &app_id)?;
-    let bytes = std::fs::read(&file).ok()?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return None;
-    }
-    let mime = if file.extension().is_some_and(|e| e == "png") {
-        "image/png"
-    } else {
-        "image/jpeg"
-    };
-    Some(format!(
-        "data:{mime};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    ))
-}
-
 /// OBS game capture for one game. Turning it on also turns CachyPlay on for the game, since
 /// CachyPlay's launch helper is what starts the game through obs-gamecapture.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_obs_capture(app_id: String, on: bool) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -107,7 +88,7 @@ fn set_obs_capture(app_id: String, on: bool) -> CmdResult<String> {
 }
 
 /// "What happened?" for one start, and/or whether it was online.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_run_note(
     app_id: String,
     start: String,
@@ -119,14 +100,14 @@ fn set_run_note(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_online_only(app_id: String, on: bool) -> CmdResult<()> {
     let p = paths()?;
     cachyplay_core::notes::set_online_only(&p, &app_id, on).map_err(|e| format!("{e:#}"))
 }
 
 /// "Use the graphics card" for one game (PCs with two graphics chips).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_prefer_card(app_id: String, on: bool) -> CmdResult<String> {
     let p = paths()?;
     cachyplay_core::gpus::set_prefer_card(&p, &app_id, on).map_err(|e| format!("{e:#}"))?;
@@ -137,7 +118,7 @@ fn set_prefer_card(app_id: String, on: bool) -> CmdResult<String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_obs_all(on: bool) -> CmdResult<String> {
     let p = paths()?;
     cachyplay_core::obs::set_all(&p, on).map_err(|e| format!("{e:#}"))?;
@@ -149,7 +130,7 @@ fn set_obs_all(on: bool) -> CmdResult<String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn obs_settings() -> CmdResult<serde_json::Value> {
     let p = paths()?;
     let s = cachyplay_core::obs::load(&p);
@@ -161,7 +142,7 @@ fn obs_settings() -> CmdResult<serde_json::Value> {
 }
 
 /// Force a game to use another compatibility tool (Proton version). Needs Steam closed.
-#[tauri::command]
+#[tauri::command(async)]
 fn switch_compat_tool(app_id: String, name: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -181,7 +162,7 @@ fn switch_compat_tool(app_id: String, name: String) -> CmdResult<String> {
     ))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn undo_compat_tool(app_id: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -192,14 +173,17 @@ fn undo_compat_tool(app_id: String) -> CmdResult<String> {
 /// Everything the app polls every few seconds: Steam's state, a fingerprint of the data the
 /// pages are built from (so the app refreshes when a game starts, ends or crashes), and the
 /// changes waiting for Steam to close.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone, PartialEq)]
 struct Live {
     steam: cachyplay_core::live::SteamState,
     token: String,
     waiting: Vec<cachyplay_core::live::Action>,
+    /// Results of waiting changes that just ran because Steam closed (shown as messages).
+    #[serde(default)]
+    ran: Vec<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn live_status() -> CmdResult<Live> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -207,11 +191,12 @@ fn live_status() -> CmdResult<Live> {
         steam: cachyplay_core::live::steam_state(&c.proc_root),
         token: cachyplay_core::live::token(&c),
         waiting: cachyplay_core::live::queue(&p),
+        ran: vec![],
     })
 }
 
 /// Save a change to run once Steam closes.
-#[tauri::command]
+#[tauri::command(async)]
 fn queue_action(action: cachyplay_core::live::Action) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -227,13 +212,13 @@ fn queue_action(action: cachyplay_core::live::Action) -> CmdResult<String> {
     ))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cancel_waiting(app_id: String) -> CmdResult<()> {
     let p = paths()?;
     cachyplay_core::live::cancel(&p, &app_id).map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn run_waiting() -> CmdResult<Vec<String>> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -242,7 +227,7 @@ fn run_waiting() -> CmdResult<Vec<String>> {
 }
 
 /// Ask Steam to quit properly (the same as Steam → Exit).
-#[tauri::command]
+#[tauri::command(async)]
 fn close_steam() -> CmdResult<String> {
     std::process::Command::new("steam")
         .arg("-shutdown")
@@ -254,7 +239,7 @@ fn close_steam() -> CmdResult<String> {
     Ok("Asked Steam to close. Waiting changes run as soon as it has.".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_steam() -> CmdResult<String> {
     let started = std::process::Command::new("setsid")
         .args(["-f", "steam"])
@@ -273,7 +258,7 @@ fn open_steam() -> CmdResult<String> {
     Ok("Starting Steam.".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reset_shader_cache(app_id: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -291,7 +276,7 @@ fn reset_shader_cache(app_id: String) -> CmdResult<String> {
     Ok(format!("Moved {}'s shader cache aside. Steam rebuilds it on the next start (expect a little stutter at first). Undo puts the old one back.", g.name))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn undo_shader_cache(app_id: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -302,7 +287,7 @@ fn undo_shader_cache(app_id: String) -> CmdResult<String> {
 }
 
 /// "Try these settings" for one game.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_your_settings(app_id: String, text: String) -> CmdResult<String> {
     let p = paths()?;
     Ok(match cachyplay_core::fixes::set_your_settings(&p, &app_id, &text).map_err(|e| format!("{e:#}"))? {
@@ -311,7 +296,7 @@ fn set_your_settings(app_id: String, text: String) -> CmdResult<String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_enabled(app_id: String, enabled: bool) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -383,7 +368,7 @@ async fn create_report(app_id: Option<String>) -> CmdResult<ReportResult> {
 }
 
 /// Open a folder in the file manager.
-#[tauri::command]
+#[tauri::command(async)]
 fn open_folder(path: String) -> CmdResult<()> {
     let p = PathBuf::from(&path);
     let dir = if p.is_dir() {
@@ -452,27 +437,31 @@ fn has_compat_switches(p: &Paths) -> bool {
     std::fs::read_dir(p.data.join("compat-tool")).is_ok_and(|mut d| d.next().is_some())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn restore_all() -> CmdResult<Vec<String>> {
     restore_everything(&paths()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn game_settings_all() -> CmdResult<Vec<cachyplay_core::keep::GameSettings>> {
     let p = paths()?;
     Ok(cachyplay_core::keep::all(&ctx(&p)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn export_settings() -> CmdResult<String> {
     let p = paths()?;
     let games = cachyplay_core::keep::all(&ctx(&p)?);
     let file = p.report_dir().join("CachyPlay game settings.txt");
-    std::fs::write(&file, cachyplay_core::keep::export_text(&games)).map_err(|e| e.to_string())?;
+    cachyplay_core::fsutil::atomic_write(
+        &file,
+        cachyplay_core::keep::export_text(&games).as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(file.display().to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
     let p = paths()?;
     let mut saved = None;
@@ -481,8 +470,11 @@ fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
             let games = cachyplay_core::keep::all(&c);
             if !games.is_empty() {
                 let file = p.report_dir().join("CachyPlay game settings.txt");
-                std::fs::write(&file, cachyplay_core::keep::export_text(&games))
-                    .map_err(|e| e.to_string())?;
+                cachyplay_core::fsutil::atomic_write(
+                    &file,
+                    cachyplay_core::keep::export_text(&games).as_bytes(),
+                )
+                .map_err(|e| e.to_string())?;
                 saved = Some(file);
             }
         }
@@ -544,7 +536,7 @@ fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
 }
 
 /// Install a downloaded copy (this GUI + the `cachyplay` command next to it) into ~/.local/bin.
-#[tauri::command]
+#[tauri::command(async)]
 fn install_self() -> CmdResult<String> {
     let p = paths()?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -595,7 +587,7 @@ async fn apply_fix(app_id: String, id: String) -> CmdResult<String> {
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn undo_fix(app_id: String, id: String) -> CmdResult<String> {
     let p = paths()?;
     match cachyplay_core::fixes::remove(&p, &app_id, &id).map_err(|e| format!("{e:#}"))? {
@@ -606,7 +598,7 @@ fn undo_fix(app_id: String, id: String) -> CmdResult<String> {
 
 /// Undo one applied change, saying why: "worse" or "didnt_help" rule it out for this game,
 /// "testing" doesn't.
-#[tauri::command]
+#[tauri::command(async)]
 fn undo_change(app_id: String, id: String, reason: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -646,7 +638,7 @@ fn undo_change(app_id: String, id: String, reason: String) -> CmdResult<String> 
 }
 
 /// "Try again": offer a ruled-out change once more.
-#[tauri::command]
+#[tauri::command(async)]
 fn try_again(app_id: String, id: String) -> CmdResult<()> {
     let p = paths()?;
     cachyplay_core::tries::try_again(&p, &app_id, &id).map_err(|e| format!("{e:#}"))
@@ -698,7 +690,7 @@ async fn fix_it(app_id: String) -> CmdResult<String> {
 }
 
 /// The answer to "Did it work?".
-#[tauri::command]
+#[tauri::command(async)]
 fn set_verdict(app_id: String, id: String, worked: bool) -> CmdResult<String> {
     let p = paths()?;
     cachyplay_core::fixes::set_verdict(&p, &app_id, &id, worked).map_err(|e| format!("{e:#}"))?;
@@ -709,7 +701,7 @@ fn set_verdict(app_id: String, id: String, worked: bool) -> CmdResult<String> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pc_check() -> CmdResult<Vec<cachyplay_core::pccheck::Check>> {
     let p = paths()?;
     let libraries = ctx(&p)
@@ -721,12 +713,12 @@ fn pc_check() -> CmdResult<Vec<cachyplay_core::pccheck::Check>> {
     ))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn self_test() -> CmdResult<Vec<cachyplay_core::pccheck::Check>> {
     Ok(cachyplay_core::pccheck::self_test(&paths()?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reset_prefix(app_id: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -735,7 +727,7 @@ fn reset_prefix(app_id: String) -> CmdResult<String> {
     Ok(format!("{}'s Windows files were set aside. Steam makes fresh ones the next time you start it. Undo puts the old ones back.", g.name))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn undo_prefix_reset(app_id: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -744,7 +736,7 @@ fn undo_prefix_reset(app_id: String) -> CmdResult<String> {
     Ok(format!("Put {}'s earlier Windows files back.", g.name))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_kept_prefixes(app_id: String) -> CmdResult<String> {
     let p = paths()?;
     let c = ctx(&p)?;
@@ -773,13 +765,13 @@ async fn protondb_rating(app_id: String) -> CmdResult<Option<serde_json::Value>>
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn app_settings() -> CmdResult<update::Settings> {
     Ok(update::Settings::load(&paths()?))
 }
 
 /// Change one display or privacy setting: "protondb", "big_screen" (true/false) or "theme".
-#[tauri::command]
+#[tauri::command(async)]
 fn set_app_setting(key: String, value: serde_json::Value) -> CmdResult<()> {
     let p = paths()?;
     let mut s = update::Settings::load(&p);
@@ -798,7 +790,7 @@ fn set_app_setting(key: String, value: serde_json::Value) -> CmdResult<()> {
 }
 
 /// KDE's accent color (from ~/.config/kdeglobals), as "#rrggbb", to match the desktop.
-#[tauri::command]
+#[tauri::command(async)]
 fn desktop_accent() -> Option<String> {
     let p = paths().ok()?;
     let text = std::fs::read_to_string(p.home.join(".config/kdeglobals")).ok()?;
@@ -811,13 +803,13 @@ fn desktop_accent() -> Option<String> {
 }
 
 /// "dark" or "light" from the desktop's own settings, or None if it doesn't say.
-#[tauri::command]
+#[tauri::command(async)]
 fn desktop_theme() -> Option<String> {
     let p = paths().ok()?;
     cachyplay_core::sys::desktop_theme(&p.home).map(str::to_string)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_url(url: String) -> CmdResult<()> {
     if !(url.starts_with("https://") || url.starts_with("steam://")) {
         return Err("Only web and Steam links can be opened.".into());
@@ -845,7 +837,7 @@ async fn update_status(force: Option<bool>) -> CmdResult<update::UpdateStatus> {
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_channel(channel: update::Channel) -> CmdResult<()> {
     let p = paths()?;
     let mut s = update::Settings::load(&p);
@@ -877,12 +869,12 @@ async fn install_update(to_stable: Option<bool>) -> CmdResult<String> {
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn roll_back() -> CmdResult<String> {
     update::roll_back(&paths()?).map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn restart_app(app: tauri::AppHandle) {
     app.restart();
 }
@@ -896,7 +888,7 @@ struct ReportEntry {
     game: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn saved_reports() -> CmdResult<Vec<ReportEntry>> {
     let p = paths()?;
     let games = ctx(&p).map(|c| c.steam.games()).unwrap_or_default();
@@ -913,7 +905,7 @@ fn saved_reports() -> CmdResult<Vec<ReportEntry>> {
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_issue_page() -> CmdResult<()> {
     let url = format!("https://github.com/{}/issues/new/choose", update::REPO);
     std::process::Command::new("xdg-open")
@@ -923,16 +915,274 @@ fn open_issue_page() -> CmdResult<()> {
         .map_err(|e| format!("Couldn't open the browser: {e}"))
 }
 
+/* ---------- watching for changes (instead of the window asking every few seconds) ---------- */
+
+/// Whether the window can be seen and has focus. Hidden: nothing is refreshed; unfocused: slower.
+static VISIBLE: AtomicBool = AtomicBool::new(true);
+static FOCUSED: AtomicBool = AtomicBool::new(true);
+/// Set when the window comes back, so the watcher looks at once instead of waiting.
+static CHECK_NOW: AtomicBool = AtomicBool::new(true);
+
+/// How long the watcher waits between looks.
+fn watch_interval(visible: bool, focused: bool, waiting: bool) -> Option<Duration> {
+    match (visible, focused) {
+        (true, true) => Some(Duration::from_secs(3)),
+        (true, false) => Some(Duration::from_secs(10)),
+        // Hidden: only keep an eye on Steam if changes are waiting for it to close.
+        (false, _) if waiting => Some(Duration::from_secs(5)),
+        (false, _) => None,
+    }
+}
+
+/// The window tells the watcher when it's hidden (minimized, another workspace) or shown again.
+#[tauri::command]
+fn set_visible(visible: bool) {
+    VISIBLE.store(visible, Ordering::Relaxed);
+    if visible {
+        CHECK_NOW.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A background thread that looks at Steam and CachyPlay's data, and tells the window (event
+/// "live") only when something changed: Steam opened or closed, a game started, ended or crashed,
+/// or a change waiting for Steam ran. Linux has no simple signal for "a game started", so this is
+/// a cheap look every few seconds on this thread, never on the window's thread.
+fn watch(app: tauri::AppHandle) {
+    use cachyplay_core::live::{self, SteamState};
+    let mut last_sent: Option<Live> = None;
+    let mut last_steam: Option<SteamState> = None;
+    let mut last_look = Instant::now() - Duration::from_secs(60);
+    let mut pending_ran: Vec<String> = Vec::new();
+    loop {
+        std::thread::sleep(Duration::from_millis(250));
+        let Ok(p) = paths() else { continue };
+        let visible = VISIBLE.load(Ordering::Relaxed);
+        let waiting_now = !live::queue(&p).is_empty();
+        let due = match watch_interval(visible, FOCUSED.load(Ordering::Relaxed), waiting_now) {
+            Some(every) => last_look.elapsed() >= every,
+            None => false,
+        };
+        if !(due || (visible && CHECK_NOW.swap(false, Ordering::Relaxed))) {
+            continue;
+        }
+        last_look = Instant::now();
+        let Ok(c) = ctx(&p) else { continue };
+        let steam = live::steam_state(&c.proc_root);
+        if last_steam.is_some_and(|s| s != SteamState::Closed)
+            && steam == SteamState::Closed
+            && waiting_now
+        {
+            let bin = library::installed_cli(&p);
+            match live::run_queue(&c, bin.as_deref()) {
+                Ok(lines) => pending_ran.extend(lines),
+                Err(e) => pending_ran.push(format!("{e:#}")),
+            }
+        }
+        last_steam = Some(steam);
+        if !visible {
+            continue; // nothing is redrawn while hidden; the window catches up when shown
+        }
+        let now = Live {
+            steam,
+            token: live::token(&c),
+            waiting: live::queue(&p),
+            ran: std::mem::take(&mut pending_ran),
+        };
+        let changed = last_sent.as_ref().is_none_or(|l| {
+            l.steam != now.steam || l.token != now.token || l.waiting != now.waiting
+        });
+        if changed || !now.ran.is_empty() {
+            let _ = app.emit("live", &now);
+            last_sent = Some(Live { ran: vec![], ..now });
+        }
+    }
+}
+
+/* ---------- cover art through cover://localhost/<appid> ---------- */
+
+/// Serves only the cover images CachyPlay finds for a game in Steam's own cache; nothing else on
+/// disk can be reached through this link.
+fn cover_response(path: &str) -> tauri::http::Response<Vec<u8>> {
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap_or_default()
+    };
+    let app_id = path.trim_matches('/');
+    if app_id.is_empty() || !app_id.bytes().all(|b| b.is_ascii_digit()) {
+        return not_found();
+    }
+    let Some(file) = paths()
+        .ok()
+        .and_then(|p| ctx(&p).ok())
+        .and_then(|c| library::cover_art(&c.steam.root, app_id))
+    else {
+        return not_found();
+    };
+    let Ok(bytes) = std::fs::read(&file) else {
+        return not_found();
+    };
+    if bytes.len() > 4 * 1024 * 1024 {
+        return not_found();
+    }
+    let mime = if file.extension().is_some_and(|e| e == "png") {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    tauri::http::Response::builder()
+        .header("Content-Type", mime)
+        .header("Cache-Control", "max-age=3600")
+        .body(bytes)
+        .unwrap_or_else(|_| not_found())
+}
+
+/* ---------- "closed unexpectedly" ---------- */
+
+static LAST_CRASH: Mutex<Option<cachyplay_core::crash::LastCrash>> = Mutex::new(None);
+
+#[tauri::command]
+fn last_crash() -> Option<cachyplay_core::crash::LastCrash> {
+    LAST_CRASH.lock().ok().and_then(|c| c.clone())
+}
+
+#[tauri::command]
+fn dismiss_crash() {
+    if let Ok(mut c) = LAST_CRASH.lock() {
+        *c = None;
+    }
+}
+
+/// Errors in the window itself (window.onerror) go into CachyPlay's log.
+#[tauri::command(async)]
+fn log_ui_error(message: String) {
+    if let Ok(p) = paths() {
+        let msg: String = message.chars().take(2000).collect();
+        cachyplay_core::logging::write(&p, &format!("window error: {msg}"));
+    }
+}
+
+/// `cachyplay-gui --version`, `--self-test [--quick]`: answered without opening a window.
+fn answer_flags(context: &tauri::Context) -> Option<i32> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version") {
+        println!("cachyplay-gui {}", cachyplay_core::VERSION);
+        return Some(0);
+    }
+    if !args.iter().any(|a| a == "--self-test") {
+        return None;
+    }
+    let p = match Paths::from_env() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[FAIL] {e:#}");
+            return Some(1);
+        }
+    };
+    let mut lines = match cachyplay_core::selftest::quick(&p) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[FAIL] {e:#}");
+            return Some(1);
+        }
+    };
+    for page in ["index.html", "app.js", "style.css"] {
+        if context
+            .assets()
+            .get(&tauri::utils::assets::AssetKey::from(page))
+            .is_none()
+        {
+            eprintln!("[FAIL] the window's {page} is missing from this build");
+            return Some(1);
+        }
+    }
+    lines.push("Window files built in".into());
+    for l in lines {
+        println!("[ok  ] {l}");
+    }
+    if !args.iter().any(|a| a == "--quick") {
+        for c in cachyplay_core::pccheck::self_test(&p) {
+            println!("[{:?}] {}: {}", c.level, c.title, c.detail);
+        }
+    }
+    println!("Self-test passed.");
+    Some(0)
+}
+
+/// Logging out, shutting down or `kill` send SIGTERM/SIGHUP/SIGINT: close normally (removing the
+/// running marker) instead of being cut off, so the next start doesn't say it closed unexpectedly.
+fn close_on_signals(app: tauri::AppHandle) {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            if signals.forever().next().is_some() {
+                if let Ok(p) = paths() {
+                    cachyplay_core::crash::clean_exit(&p);
+                }
+                app.exit(0);
+            }
+        });
+}
+
 fn main() {
+    let context = tauri::generate_context!();
+    if let Some(code) = answer_flags(&context) {
+        std::process::exit(code);
+    }
     if let Ok(p) = Paths::from_env() {
+        cachyplay_core::crash::install_panic_hook(&p, "cachyplay-gui");
+        let previous = cachyplay_core::crash::check(&p, std::path::Path::new("/proc"));
+        if let Ok(mut c) = LAST_CRASH.lock() {
+            *c = previous;
+        }
         cachyplay_core::housekeeping::protect_settings(&p);
         cachyplay_core::install::refresh_menu_entries(&p);
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // Must be first: a second launch hands over to this window and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
+        .register_asynchronous_uri_scheme_protocol("cover", |_ctx, request, responder| {
+            let path = request.uri().path().to_string();
+            std::thread::spawn(move || responder.respond(cover_response(&path)));
+        })
+        .setup(|app| {
+            // By now a second launch has handed over and exited, so this is the copy that stays.
+            if let Ok(p) = paths() {
+                cachyplay_core::crash::claim(&p, std::path::Path::new("/proc"));
+            }
+            close_on_signals(app.handle().clone());
+            let handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("watcher".into())
+                .spawn(move || watch(handle))?;
+            Ok(())
+        })
+        .on_window_event(|_w, event| {
+            if let tauri::WindowEvent::Focused(f) = event {
+                FOCUSED.store(*f, Ordering::Relaxed);
+                if *f {
+                    CHECK_NOW.store(true, Ordering::Relaxed);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            set_visible,
+            last_crash,
+            dismiss_crash,
+            log_ui_error,
             overview,
             game_detail,
-            cover,
             set_enabled,
             set_prefer_card,
             live_status,
@@ -985,6 +1235,46 @@ fn main() {
             game_settings_all,
             export_settings
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running CachyPlay");
+        .build(context)
+        .expect("error while starting CachyPlay");
+    app.run(|_app, event| {
+        if let tauri::RunEvent::Exit = event {
+            if let Ok(p) = Paths::from_env() {
+                cachyplay_core::crash::clean_exit(&p);
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watcher_rests_while_hidden_and_slows_when_unfocused() {
+        assert_eq!(
+            watch_interval(true, true, false),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            watch_interval(true, false, false),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            watch_interval(false, false, false),
+            None,
+            "hidden: nothing runs"
+        );
+        assert!(
+            watch_interval(false, false, true).is_some(),
+            "still runs waiting changes when Steam closes"
+        );
+    }
+
+    #[test]
+    fn cover_links_only_take_an_app_id() {
+        for bad in ["", "/", "/../../etc/passwd", "/12a", "/%2e%2e"] {
+            assert_eq!(cover_response(bad).status(), 404, "{bad}");
+        }
+    }
 }

@@ -7,11 +7,13 @@
 #       gh api repos/Matt-B-007/CachyPlay/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
 #
 # Options:  --beta         newest beta instead of the newest stable release
+#           --version X    install version X (like 0.1.0-beta.15) instead of the newest
 #           --from-source  build on this PC instead of downloading a ready-made build
 #           --no-launch    don't open CachyPlay at the end
+#           --uninstall    put every game back the way it was and remove CachyPlay
 #
 # What it does: finds a ready-made build (in this folder, or on GitHub Releases), checks its
-# SHA-256 checksum, and runs `cachyplay install`, which copies CachyPlay to ~/.local/bin and adds it
+# SHA-256 checksum (and its signature, if minisign is installed), and runs `cachyplay install`, which copies CachyPlay to ~/.local/bin and adds it
 # to your app menu. If no ready-made build exists for this version, it builds one from the source
 # code in this folder (installing the build tools with pacman, after asking). Nothing goes outside
 # your home folder except those pacman packages. Safe to run again: it just reinstalls.
@@ -22,6 +24,10 @@ REPO="Matt-B-007/CachyPlay"
 CHANNEL=stable
 FROM_SOURCE=0
 LAUNCH=1
+VERSION=""
+UNINSTALL=0
+# The public keys CachyPlay releases are signed with (same as packaging/minisign.pub).
+KEYS="RWQcs3jtP2jTiAMafwQX8UwciSjOH4o9tQcCVvYl2NkdnOeVupKPlhvC RWRObC9qlP598z1kmTFw7W+TKYKk3w2/63qWyRWkvRSkqGwGEgjmOlGe"
 
 # Messages go to stderr, so functions can hand back a path on stdout.
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
@@ -32,20 +38,39 @@ die() {
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
     --beta) CHANNEL=beta ;;
     --from-source) FROM_SOURCE=1 ;;
     --no-launch) LAUNCH=0 ;;
+    --uninstall) UNINSTALL=1 ;;
+    --version)
+        [ $# -ge 2 ] || die "--version needs a version number, like --version 0.1.0-beta.15"
+        VERSION="v${2#v}"
+        shift
+        ;;
+    --version=*) VERSION="v$(echo "${1#--version=}" | sed 's/^v//')" ;;
     -h | --help)
-        sed -n '2,18p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
+        sed -n '2,20p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
         exit 0
         ;;
-    *) die "Unknown option: $arg (try --help)" ;;
+    *) die "Unknown option: $1 (try --help)" ;;
     esac
+    shift
 done
 
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, without sudo. CachyPlay installs into your home folder."
+
+if [ "$UNINSTALL" = 1 ]; then
+    bin="$HOME/.local/bin/cachyplay"
+    [ -x "$bin" ] || die "CachyPlay isn't installed in ~/.local/bin. (Installed from the AUR? Use: sudo pacman -Rns cachyplay)"
+    # The uninstaller asks before changing anything; read the answer from the keyboard even
+    # when this script was piped into sh.
+    if [ -r /dev/tty ]; then
+        exec "$bin" uninstall </dev/tty
+    fi
+    exec "$bin" uninstall
+fi
 [ "$(uname -m)" = x86_64 ] || die "CachyPlay builds are for x86_64 PCs."
 
 # The folder this script is in, if it was run from a file (empty when piped into sh).
@@ -119,20 +144,54 @@ pick_tag() {
     echo "$tag"
 }
 
+# Check the checksum file's signature with minisign, if it's installed. Releases from beta.15 on are
+# signed; the app itself always checks signatures before it updates.
+check_signature() {
+    sums="$1"
+    if ! have minisign; then
+        say "Checked the download's checksum. (Install minisign to check its signature too.)"
+        return 0
+    fi
+    if [ ! -f "$sums.minisig" ]; then
+        warn "This release isn't signed (releases before beta.15 weren't). Checked its checksum only."
+        return 0
+    fi
+    for key in $KEYS; do
+        if minisign -V -q -P "$key" -m "$sums" 2>/dev/null; then
+            say "Checked the download's checksum and signature"
+            return 0
+        fi
+    done
+    die "The download's signature doesn't match CachyPlay's signing keys. It may have been tampered with; nothing was installed."
+}
+
+# Download one release file into $TMP (GitHub CLI first, then curl). Fails quietly.
+fetch() {
+    tag="$1"
+    file="$2"
+    if gh_ok && gh release download "$tag" -R "$REPO" -p "$file" -D "$TMP" --clobber >/dev/null 2>&1; then
+        return 0
+    fi
+    have curl && curl -fsSL -o "$TMP/$file" "https://github.com/$REPO/releases/download/$tag/$file" 2>/dev/null
+}
+
 # Download and unpack a release build into $TMP. Prints the unpacked folder; fails quietly.
 download_release() {
     tag="$1"
     name="cachyplay-$tag-x86_64-linux"
-    ok=0
-    if gh_ok && gh release download "$tag" -R "$REPO" -p "$name.tar.zst" -p SHA256SUMS.txt -D "$TMP" --clobber >/dev/null 2>&1; then
-        ok=1
-    elif have curl &&
-        curl -fsSL -o "$TMP/$name.tar.zst" "https://github.com/$REPO/releases/download/$tag/$name.tar.zst" 2>/dev/null &&
-        curl -fsSL -o "$TMP/SHA256SUMS.txt" "https://github.com/$REPO/releases/download/$tag/SHA256SUMS.txt" 2>/dev/null; then
-        ok=1
-    fi
-    [ "$ok" = 1 ] || return 3
-    (cd "$TMP" && grep " $name.tar.zst\$" SHA256SUMS.txt | sha256sum -c --status) ||
+    fetch "$tag" "$name.tar.zst" || return 3
+    # SHA256SUMS from beta.15 on; SHA256SUMS.txt before that.
+    sums=""
+    for f in SHA256SUMS SHA256SUMS.txt; do
+        if fetch "$tag" "$f"; then
+            sums="$f"
+            fetch "$tag" "$f.minisig" || true
+            break
+        fi
+    done
+    [ -n "$sums" ] || return 3
+    check_signature "$TMP/$sums"
+    (cd "$TMP" && grep " $name.tar.zst\$" "$sums" | sha256sum -c --status) ||
         die "The download of $tag didn't match its checksum. Nothing was installed. Try again later."
     tar --zstd -xf "$TMP/$name.tar.zst" -C "$TMP" || die "Couldn't unpack $name.tar.zst (is zstd installed?)"
     [ -x "$TMP/$name/cachyplay" ] || return 3
@@ -196,7 +255,7 @@ finish() {
 }
 
 # 1. A release download: the ready-made programs are right here.
-if [ "$FROM_SOURCE" = 0 ] && [ -n "$HERE" ] && [ -x "$HERE/cachyplay" ] && [ -x "$HERE/cachyplay-gui" ]; then
+if [ "$FROM_SOURCE" = 0 ] && [ -z "$VERSION" ] && [ -n "$HERE" ] && [ -x "$HERE/cachyplay" ] && [ -x "$HERE/cachyplay-gui" ]; then
     say "Found a ready-made build in this folder"
     finish "$HERE"
 fi
@@ -209,6 +268,9 @@ if [ -n "$HERE" ] && [ -f "$HERE/Cargo.toml" ] && [ -d "$HERE/crates/cachyplay" 
     WANT="v$(grep -m1 '^version' "$HERE/Cargo.toml" | cut -d'"' -f2)"
 fi
 
+# --version wins over the source folder's version.
+[ -z "$VERSION" ] || WANT="$VERSION"
+
 if [ "$FROM_SOURCE" = 0 ]; then
     TAG=$(pick_tag "$WANT")
     if [ -n "$TAG" ]; then
@@ -217,6 +279,7 @@ if [ "$FROM_SOURCE" = 0 ]; then
         DIR=$(download_release "$TAG") || rc=$?
         [ "$rc" = 0 ] && finish "$DIR"
         [ "$rc" = 3 ] || exit 1 # checksum or unpack problem: already explained
+        [ -z "$VERSION" ] || die "There's no ready-made build of $VERSION on GitHub. Check the version number on the Releases page."
         warn "No ready-made build of $TAG is on GitHub yet."
     elif [ -z "$SOURCE" ]; then
         if have gh && ! gh_ok; then

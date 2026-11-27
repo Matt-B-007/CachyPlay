@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write      # build provenance (public repo only)
+  attestations: write  # build provenance (public repo only)
 
 concurrency:
   group: release-${{ github.ref }}
@@ -31,18 +33,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the tag
+      - name: Check the tag, version files, changelog and signing key
         id: ver
         env:
           GH_TOKEN: ${{ github.token }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
           tag="${{ github.ref_name }}"
           ver=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           [ "$tag" = "v$ver" ] || { echo "Tag $tag doesn't match version $ver in Cargo.toml."; exit 1; }
-          assets=$(gh release view "$tag" --json assets --jq '[.assets[].name | select(endswith(".tar.zst"))] | length' 2>/dev/null || echo 0)
-          if [ "$assets" -gt 0 ]; then
-            echo "$tag is already released."
-            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          grep -q "\"$ver\"" Cargo.lock || { echo "Cargo.lock doesn't have $ver: run cargo update --workspace."; exit 1; }
+          grep -q -- "$ver" CHANGELOG.md || { echo "CHANGELOG.md doesn't mention $ver."; exit 1; }
+          # Every release is signed. Without the key nothing is published (updaters would refuse it).
+          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "The MINISIGN_SECRET_KEY secret is missing, so this release can't be signed. Add it in Settings > Secrets and variables > Actions, then re-run."; exit 1; }
+          state=$(gh release view "$tag" --json isDraft,assets --jq '[.isDraft, ([.assets[].name | select(endswith(".minisig"))] | length)] | @tsv' 2>/dev/null || true)
+          if [ -n "$state" ]; then
+            draft=$(echo "$state" | cut -f1); signed=$(echo "$state" | cut -f2)
+            if [ "$draft" = "false" ] && [ "$signed" -gt 0 ]; then
+              echo "$tag is already released."
+              echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            # A draft (or unsigned release) left by a failed run: start again from scratch.
+            gh release delete "$tag" --yes
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
@@ -71,6 +83,9 @@ jobs:
           cargo build --workspace --release --locked
           got=$(./target/release/cachyplay --version)
           [ "$got" = "cachyplay ${{ steps.ver.outputs.version }}" ] || { echo "The build reports '$got'"; exit 1; }
+          # The same quick check the updater runs before it swaps in a new version.
+          ./target/release/cachyplay --self-test --quick
+          ./target/release/cachyplay-gui --self-test --quick
 
       - name: Package
         if: steps.ver.outputs.go == 'true'
@@ -79,22 +94,35 @@ jobs:
           mkdir -p "dist/$name"
           cp target/release/cachyplay target/release/cachyplay-gui install.sh README.md LICENSE CHANGELOG.md "dist/$name/"
           cp assets/cachyplay.svg "dist/$name/"
-          (cd dist && tar --zstd -cf "$name.tar.zst" "$name" && sha256sum "$name.tar.zst" > SHA256SUMS.txt)
+          (cd dist && tar --zstd -cf "$name.tar.zst" "$name" && sha256sum "$name.tar.zst" > SHA256SUMS)
           cp install.sh dist/install.sh
 
-      - name: Sign the checksums (if a signing key is set up; see RELEASING.md)
+      - name: Sign the checksums
         if: steps.ver.outputs.go == 'true'
         env:
-          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
-          if [ -n "$MINISIGN_KEY" ]; then
-            sudo apt-get install -y minisign
-            printf '%s\n' "$MINISIGN_KEY" > /tmp/minisign.key
-            minisign -S -s /tmp/minisign.key -m dist/SHA256SUMS.txt -t "CachyPlay ${{ steps.ver.outputs.tag }}"
-            rm -f /tmp/minisign.key
-          else
-            echo "No MINISIGN_KEY secret: release is checksummed but not signed."
-          fi
+          sudo apt-get install -y minisign
+          umask 077
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          minisign -S -s "$key" -m dist/SHA256SUMS -t "CachyPlay ${{ steps.ver.outputs.tag }}" < /dev/null
+          # Check it against the public keys built into the app before anything is published.
+          for k in $(grep -v '^untrusted comment:' packaging/minisign.pub); do
+            minisign -V -P "$k" -m dist/SHA256SUMS -q && ok=1 && break
+          done
+          [ "${ok:-}" = 1 ] || { echo "The signature doesn't match either public key in packaging/minisign.pub."; exit 1; }
+          # Old file names, for beta.14 and earlier (they look for SHA256SUMS.txt). Same content, so
+          # the same signature. Drop once no supported version needs them (see CHANGELOG).
+          cp dist/SHA256SUMS dist/SHA256SUMS.txt
+          cp dist/SHA256SUMS.minisig dist/SHA256SUMS.txt.minisig
+
+      - name: Build provenance (public repository only)
+        if: steps.ver.outputs.go == 'true' && github.event.repository.private == false
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.tar.zst
 
       - name: Release notes from CHANGELOG
         if: steps.ver.outputs.go == 'true'
@@ -103,17 +131,17 @@ jobs:
           awk -v v="$base" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "CachyPlay $ver" > notes.md
 
-      - uses: softprops/action-gh-release@v3
+      # Draft first, then upload everything, then publish: a release is never visible without its
+      # signature, so updaters can't see a half-uploaded one.
+      - name: Publish (draft, upload, publish)
         if: steps.ver.outputs.go == 'true'
-        with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: CachyPlay ${{ steps.ver.outputs.tag }}
-          body_path: notes.md
-          prerelease: ${{ contains(steps.ver.outputs.version, '-beta.') }}
-          make_latest: ${{ !contains(steps.ver.outputs.version, '-') }}
-          fail_on_unmatched_files: false
-          files: |
-            dist/*.tar.zst
-            dist/SHA256SUMS.txt
-            dist/SHA256SUMS.txt.minisig
-            dist/install.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.ver.outputs.tag }}"; ver="${{ steps.ver.outputs.version }}"
+          pre=""; latest="--latest=false"
+          case "$ver" in *-*) pre="--prerelease" ;; *) latest="--latest" ;; esac
+          gh release create "$tag" --verify-tag --draft $pre --title "CachyPlay $tag" --notes-file notes.md
+          gh release upload "$tag" --clobber dist/*.tar.zst dist/SHA256SUMS dist/SHA256SUMS.minisig \
+            dist/SHA256SUMS.txt dist/SHA256SUMS.txt.minisig dist/install.sh
+          gh release edit "$tag" --draft=false $latest

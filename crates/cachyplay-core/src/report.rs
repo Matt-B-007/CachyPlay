@@ -617,6 +617,19 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
     if let Some(l) = read_capped(&paths.log_file(), HEAD, TAIL) {
         files.push(("logs/cachyplay.log".into(), l));
     }
+    // This session's lines from memory (kept even if the log file was just rotated).
+    let session = crate::logging::recent();
+    if !session.is_empty() {
+        files.push(("logs/this-session.txt".into(), session.join("\n") + "\n"));
+    }
+    // The newest crash trace of the desktop app, if any.
+    if let Some(trace) = std::fs::read_dir(crate::crash::crash_dir(paths))
+        .ok()
+        .and_then(|rd| rd.flatten().map(|e| e.path()).max())
+        .and_then(|p| read_capped(&p, HEAD, TAIL))
+    {
+        files.push(("logs/last-crash.txt".into(), trace));
+    }
 
     // Write to a temp file next to the destination, then rename: no half-written reports.
     fs::create_dir_all(&dir)?;
@@ -966,18 +979,20 @@ impl Redactor {
         let home = paths.home.to_string_lossy().into_owned();
         if home.len() > 1 {
             pairs.push((home.clone(), "~".to_string()));
-            // Windows-style paths inside Proton logs: Z:\home\you
+            // Windows-style paths inside Proton logs: Z:\home\you (with or without the drive)
+            pairs.push((format!("Z:{}", home.replace('/', "\\")), "~".to_string()));
+            pairs.push((format!("z:{}", home.replace('/', "\\")), "~".to_string()));
             pairs.push((home.replace('/', "\\"), "~".to_string()));
         }
         if let Some(user) = std::env::var("USER").ok().filter(|u| u.len() > 2) {
-            pairs.push((user, "$USER".into()));
+            pairs.push((user, "<user>".into()));
         }
         if let Some(host) = fs::read_to_string("/etc/hostname")
             .ok()
             .map(|h| h.trim().to_string())
             .filter(|h| h.len() > 2)
         {
-            pairs.push((host, "<hostname>".into()));
+            pairs.push((host, "<host>".into()));
         }
         if let Some(ctx) = ctx {
             if ctx.account.account_id.len() > 3 {
@@ -1015,8 +1030,11 @@ pub fn redact_patterns(text: &str) -> String {
         vec![
             (Regex::new(r"GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}").unwrap(), "GPU-<id>"),
             (Regex::new(r"\b(?:[0-9a-fA-F]{2}:){5,}[0-9a-fA-F]{2}\b").unwrap(), "<mac>"),
-            (Regex::new(r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b").unwrap(), "<ipv6>"),
-            (Regex::new(r"\b(?:[0-9a-fA-F]{1,4}:){1,6}:(?:[0-9a-fA-F]{1,4}:?){0,6}\b").unwrap(), "<ipv6>"),
+            (Regex::new(r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b").unwrap(), "<ip>"),
+            (Regex::new(r"\b(?:[0-9a-fA-F]{1,4}:){1,6}:(?:[0-9a-fA-F]{1,4}:?){0,6}\b").unwrap(), "<ip>"),
+            // Access tokens that can appear in logs and environment dumps.
+            (Regex::new(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b").unwrap(), "<secret>"),
+            (Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}").unwrap(), "Bearer <secret>"),
             (Regex::new(&format!(r"\b(?:{octet}\.){{3}}{octet}\b")).unwrap(), "<ip>"),
         ]
     });
@@ -1097,7 +1115,7 @@ fn redact_secret_line(line: &str) -> String {
     if let Some((k, _)) = line.split_once('=') {
         let up = k.to_uppercase();
         if !k.contains(' ') && KEYS.iter().any(|s| up.contains(s)) {
-            return format!("{k}=<redacted>");
+            return format!("{k}=<secret>");
         }
     }
     line.to_string()
@@ -1212,7 +1230,7 @@ mod tests {
         assert!(clean.contains("620.73.04"), "driver version kept");
         assert!(clean.contains("12:11:26"), "times kept");
         assert_eq!(clean.lines().filter(|l| l.contains("Xid")).count(), 7);
-        assert!(redact_patterns("addr fe80::3cc:177e:6db:b541 x").contains("<ipv6>"));
+        assert!(redact_patterns("addr fe80::3cc:177e:6db:b541 x").contains("<ip>"));
         assert_eq!(
             redact_patterns("IP 0.0.0.0:0 and 1.4.357"),
             "IP 0.0.0.0:0 and 1.4.357"
@@ -1255,7 +1273,19 @@ mod tests {
         let r = Redactor::new(&f.paths(), Some(&ctx));
         let home = f.home().display().to_string();
         let out = r.apply(&format!("{home}/x userdata/22202/config id 76561197960287930 by Tester\nGITHUB_TOKEN=abc\nok=1\n"));
-        assert_eq!(out, "~/x userdata/<account>/config id <steamid> by <persona>\nGITHUB_TOKEN=<redacted>\nok=1\n");
+        assert_eq!(out, "~/x userdata/<account>/config id <steamid> by <persona>\nGITHUB_TOKEN=<secret>\nok=1\n");
+        // Windows-style paths in Proton logs, tokens, and network addresses.
+        let win = home.replace('/', "\\");
+        let out = r.apply(&format!("Z:{win}\\Games\\x.exe {win}\\y ghp_abcdefghijklmnopqrstuvwxyz0123 Authorization: Bearer abcdefghijklmnop1234 10.1.2.3 aa:bb:cc:dd:ee:ff\n"));
+        assert_eq!(
+            out,
+            "~\\Games\\x.exe ~\\y <secret> Authorization: Bearer <secret> <ip> <mac>\n"
+        );
+        // Game and app ids are never touched, only 17-digit Steam account ids.
+        assert_eq!(
+            r.apply("AppID 1240440 and 76561197960287930"),
+            "AppID 1240440 and <steamid>"
+        );
     }
 
     #[test]

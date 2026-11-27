@@ -33,7 +33,15 @@ jobs:
         run: |
           cargo install cargo-audit --locked --quiet
           cargo audit
-      - run: sh -n install.sh && sh -n scripts/version-guard.sh
+      - name: Check the install and release scripts
+        run: |
+          sh -n install.sh && sh -n scripts/version-guard.sh && sh -n scripts/release-check.sh
+          shellcheck install.sh scripts/*.sh
+      - name: Release build passes its own quick self-test (what the updater runs)
+        run: |
+          cargo build --release --locked -p cachyplay -p cachyplay-gui
+          ./target/release/cachyplay --self-test --quick
+          ./target/release/cachyplay-gui --self-test --quick
 
   # The same tests on an Arch-based system, closer to CachyOS than Ubuntu.
   arch:

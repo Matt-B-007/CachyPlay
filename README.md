@@ -31,7 +31,7 @@ Installer options: `--beta`, `--from-source`, `--no-launch`. The desktop app nee
 
 ## Use
 
-Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix (or a fix is being tested), red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. The page updates by itself while it's open: when a game starts, ends or crashes, and when Steam opens or closes.
+Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix (or a fix is being tested), red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. The page updates by itself while it's open: when a game starts, ends or crashes, and when Steam opens or closes. Nothing runs while the window is minimized or hidden (except finishing changes that wait for Steam to close), and opening CachyPlay again just brings the open window to the front.
 
 After a fix, a game moves through **Testing the fix → Seems to work → Works with a fix**, with the fix named. A clean run is twice as long as the game used to last before crashing (at least 10 minutes, at most an hour), and "Works with a fix" needs 3 clean runs, or 2 adding up to an hour. A new crash after the fix sends it back to red; crashes from before the fix no longer count. Every start counts, even with CachyPlay off.
 
@@ -43,7 +43,7 @@ After a fix, a game moves through **Testing the fix → Seems to work → Works 
 
 The gear icon opens Settings: updates, a **PC check** for common Linux gaming problems, light/dark theme (it follows your desktop, and is dark when the desktop doesn't say), big-screen mode for the TV with controller support, optional ProtonDB ratings, and uninstall. Problems the PC check finds also show as a banner.
 
-From a terminal: `cachyplay doctor` (PC check and self-test), `cachyplay try <appid> "SETTINGS"`, `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo | --delete-kept]`, `cachyplay card <appid> on|off`, `cachyplay report <appid>`.
+From a terminal: `cachyplay doctor` or `cachyplay --self-test` (PC check and self-test; `--self-test --quick` only checks CachyPlay itself starts), `cachyplay --report`, `cachyplay --update`, `cachyplay --rollback`, `cachyplay --uninstall`, `cachyplay try <appid> "SETTINGS"`, `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo | --delete-kept]`, `cachyplay card <appid> on|off`, `cachyplay report <appid>`.
 
 Need help? See [SUPPORT.md](SUPPORT.md). Making a release? See [RELEASING.md](RELEASING.md).
 
@@ -71,7 +71,9 @@ When the game starts, CachyPlay applies the game's fix file (environment variabl
 
 ## Privacy
 
-CachyPlay collects no telemetry. In later versions its only network requests are checking GitHub for fix-file and app updates. Bug reports stay on your machine until you choose to share them. Before a report is written, your home folder path, username, Steam IDs, Steam name, hostname and anything that looks like a token are removed from it.
+CachyPlay collects no telemetry. Its only network requests are checking GitHub for app updates, and ProtonDB ratings if you turn them on (only the game's AppID is sent). Bug reports stay on your machine until you choose to share them. Before a report is written, these are replaced: your home folder (`~`, also in Windows-style paths like `Z:\home\you`), user name (`<user>`), computer name (`<host>`), Steam account IDs (`<steamid>`; game IDs stay), Steam account number and name (`<account>`, `<persona>`), IP and MAC addresses (`<ip>`, `<mac>`), and anything that looks like a token or password (`<secret>`).
+
+Where CachyPlay keeps its files: settings in `~/.config/cachyplay`, logs and crash traces in `~/.local/state/cachyplay` (logs at most 1 MB each, 3 kept; the last 10 crash traces), downloads in `~/.cache/cachyplay`, the programs in `~/.local/bin`. Game data (fixes, what's been tried, notes) is in `~/.local/share/cachyplay`, which the family standard allows for app data.
 
 ## Suggested fixes
 
@@ -95,7 +97,8 @@ CachyPlay checks GitHub for a newer version when it starts, and never interrupts
 - **Stable or Beta:** pick a channel in Settings → Updates. Beta gets new features sooner. Beta builds follow the Beta channel until you choose; on Stable, CachyPlay tells you when a newer beta is out and offers **Switch to Beta and update**.
 - **Beta and Stable together:** a beta ranks below the finished version with the same number (`0.1.0-beta.11` < `0.1.0` < `0.1.1-beta.1`). If you're on a beta that's newer than the newest Stable and switch to Stable, CachyPlay offers **Switch to Stable now**; otherwise you get Stable from its next release.
 - **Updates come from GitHub Releases.** GitHub publishes one by itself whenever the version number in the code goes up and all tests pass. A release whose build failed is never offered.
-- **Safe updates:** the download is checked against its SHA-256 checksum and test-run before anything is replaced. The previous version is kept, so **Go back to the previous version** in Settings undoes an update.
+- **Safe updates:** every release is signed. CachyPlay checks the signature (with either of its two built-in keys) and the SHA-256 checksum, then runs the new version's quick self-test before anything is replaced. A release without a signature isn't offered, and a tampered one is refused. The previous version is kept, so **Go back to the previous version** in Settings undoes an update.
+- **If your DNS fails:** CachyPlay tries again through public DNS over HTTPS (1.1.1.1, then 9.9.9.9) before saying GitHub can't be reached.
 - **AUR installs** are updated by pacman. The app shows the command (`paru -S cachyplay`, or `paru -S cachyplay-beta` for the beta channel).
 - From the terminal: `cachyplay update`, `cachyplay update --check`, `cachyplay update --to-stable`, `cachyplay channel beta`.
 

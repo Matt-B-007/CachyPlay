@@ -17,9 +17,32 @@ v0.1.0-beta.11 (graphics card vs built-in chip, crash history across restarts, a
 automatic releases), v0.1.0-beta.12 (status steps, live updates, Try these settings, Steam handling,
 Find the cause, GPU logging; never published because a test failed on GitHub),
 v0.1.0-beta.13 (everything from beta.12, plus the test fix), v0.1.0-beta.14 (every change
-undoable and remembered, no constant refreshing, reliable start records, per-game fixes).
+undoable and remembered, no constant refreshing, reliable start records, per-game fixes),
+v0.1.0-beta.15 (speed and safety: the window never freezes, signed updates, one window, crash
+notice).
 
 ### Added
+- **Signed updates (beta.15)**: every release is signed, and CachyPlay checks the signature (two
+  built-in keys: the one GitHub uses and an offline backup) as well as the checksum. A release
+  without a signature isn't offered, and a tampered one is refused with nothing changed. Releases
+  are published as drafts first, so an update is never seen half-uploaded. Releases from before
+  beta.15 can't be installed by the updater any more; **Go back** still works from the copy on your
+  PC. Checksums are now in `SHA256SUMS`; `SHA256SUMS.txt` is still published for beta.14 and older,
+  until no supported version needs it.
+- **The new version checks itself before it's installed (beta.15)**: `--self-test --quick` (starts,
+  finds its files, reads your settings; no network) runs on the download before it replaces the
+  current version. If it fails, you keep the version you have.
+- **One window (beta.15)**: opening CachyPlay while it's already open brings the open window to the
+  front instead of starting a second copy. The launch helper Steam uses is never affected.
+- **"CachyPlay closed unexpectedly last time" (beta.15)**: with **Report** and **Dismiss**, when the
+  app didn't close normally. A crash trace is saved when CachyPlay itself crashed (the last 10 are
+  kept), and errors in the window are written to the log. Logging out or shutting down closes it
+  normally, so that doesn't count.
+- **Standard command-line flags (beta.15)**: `--self-test` (same as `doctor`), `--self-test --quick`,
+  `--report`, `--update`, `--rollback`, `--uninstall`. The installer gains `--version X` and
+  `--uninstall`, and checks signatures when minisign is installed.
+- **Public DNS fallback (beta.15)**: if the PC's DNS can't find GitHub, updates try again through
+  public DNS over HTTPS before giving up.
 - **Applied for this game (beta.14)**: one card listing every fix, your settings, Proton switch and
   shader cache CachyPlay applies to a game, each with Undo, plus Undo all. It no longer disappears
   when a suggestion stops matching (Direct3D 12 couldn't be undone in the app).
@@ -175,6 +198,26 @@ undoable and remembered, no constant refreshing, reliable start records, per-gam
 - Uninstall can keep the settings that made your games work: each game's settings are written straight
   into its Steam launch options (no CachyPlay needed) and a copy is saved to the Desktop. On by
   default in the app; `cachyplay uninstall --keep-settings` in the terminal.
+
+### Changed
+- **The window never freezes (beta.15)**: everything that reads the disk, Steam or other programs now
+  runs in the background, not on the window's thread (46 actions moved), so scanning a big library
+  or checking the PC no longer stops the window responding.
+- **No more checking every 3 seconds from the window (beta.15)**: a watcher in the background tells
+  the window only when something changed (Steam opened or closed, a game started, ended or crashed,
+  a waiting change ran). Nothing runs while the window is minimized or hidden, it looks less often
+  while unfocused, and the controller check pauses too. Changes waiting for Steam to close still run
+  while the window is hidden. Switching back to the window no longer reloads everything.
+- **Cover art loads directly (beta.15)** from Steam's cache through a `cover://` link that can only
+  return game covers, instead of being copied through the app as text.
+- **Settings file has a format number (beta.15)**: older files are upgraded automatically, a copy is
+  kept at most every 15 minutes (5 kept), and every file CachyPlay saves is written to a temporary
+  file first and then swapped in, so a crash can't leave half a file.
+- **Logs (beta.15)**: at most 1 MB per file with 3 files kept (was 2), and bug reports include this
+  session's last 500 lines and the latest crash trace.
+- **Bug report placeholders match the other apps (beta.15)**: `<user>` (was `$USER`), `<host>` (was
+  `<hostname>`), `<ip>` for every IP address, `<secret>` (was `<redacted>`), Windows-style paths
+  with the drive letter, and GitHub tokens and Bearer tokens are now hidden too.
 
 ### Reliability (beta.9)
 - Every change to Steam's files is checked after writing: if anything other than the intended

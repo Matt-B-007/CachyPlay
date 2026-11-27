@@ -33,6 +33,8 @@ step "Release build"
 cargo build --release --locked -p cachyplay -p cachyplay-gui
 got=$(./target/release/cachyplay --version)
 [ "$got" = "cachyplay $ver" ] || fail "the build reports '$got'"
+./target/release/cachyplay --self-test --quick >/dev/null || fail "the release build fails its quick self-test"
+./target/release/cachyplay-gui --self-test --quick >/dev/null || fail "the desktop app fails its quick self-test"
 
 step "Installs and runs from a throwaway home folder"
 tmp=$(mktemp -d)

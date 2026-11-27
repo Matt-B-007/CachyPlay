@@ -24,10 +24,8 @@ fi
 step "CHANGELOG mentions $ver"
 grep -q "${ver#v}" CHANGELOG.md || fail "add $ver to CHANGELOG.md"
 
-step "Formatting, lints, tests"
-cargo fmt --all --check || fail "run cargo fmt --all"
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+step "Every CI check (scripts/check.sh)"
+sh scripts/check.sh || fail "scripts/check.sh failed (see above)"
 
 step "Release build"
 cargo build --release --locked -p cachyplay -p cachyplay-gui

@@ -11,8 +11,13 @@ that hasn't been released yet. There are no tags to make by hand.
 1. Bump `version` in the root `Cargo.toml` (`0.1.0-beta.N`, or `0.1.0` for stable), then
    `cargo update --workspace`.
 2. Add the changes to `CHANGELOG.md` under that version.
-3. Optional but recommended: `scripts/release-check.sh`. It runs everything GitHub will run, plus
-   an install into a throwaway home folder.
+3. Run `sh scripts/check.sh` (or `scripts/release-check.sh`, which runs it plus version checks and
+   an install into a throwaway home folder). `scripts/check.sh` is exactly what CI runs, in the
+   same order with the same flags: shell scripts (`sh -n`/`bash -n` and shellcheck at every
+   severity), `cargo fmt --check`, clippy with warnings as errors, all tests (also in Tokyo time),
+   `cargo audit`, and the release build's quick self-test. It needs the pinned tools: the Rust in
+   `rust-toolchain.toml` (rustup installs it), `pip install shellcheck-py==0.11.0.1` and
+   `cargo install cargo-audit --locked`. None of these are needed to install or use CachyPlay.
 4. Push to `main` (or upload with StowLock). GitHub then shows two rows in the Actions tab: **CI** on `main` and **Release** on the new tag. CI:
    - stops quietly if that version is already released,
    - refuses a version that ranks below an existing release (for example `0.1.0-beta.12` after
@@ -32,6 +37,16 @@ version with the same number, so a beta for after a stable release needs the nex
 on the Stable channel never get betas; people on Beta get whichever is highest, beta or stable.
 Someone on a beta newer than the newest stable who switches to Stable sees **Switch to Stable now**.
 
+## Keeping CI green
+
+- **Pinned tools:** Rust (with clippy and rustfmt) is pinned in `rust-toolchain.toml` and
+  shellcheck to 0.11.0 in `scripts/check.sh` and CI, so a new tool release can't break CI
+  overnight. Raise them on purpose, run `scripts/check.sh`, and fix what it finds in that release.
+- **First-time cleanups get their own release:** the first reformat or lint cleanup after adding
+  or raising a tool goes in a release that changes nothing else.
+- **If a Release run fails,** check the Releases page for a leftover draft. The workflow deletes a
+  leftover draft itself the next time it runs for the same version.
+
 ## Staged releases
 
 - Every version ships to the **Beta** channel first.
@@ -40,7 +55,7 @@ Someone on a beta newer than the newest stable who switches to Stable sees **Swi
 - If a beta breaks something, fix forward with the next beta; users can also press
   **Go back to the previous version** in Settings.
 
-## Signing releases (required from beta.15)
+## Signing releases (required from beta.16)
 
 Every release is signed with minisign; the Release workflow refuses to publish without the key.
 

@@ -7,7 +7,7 @@
 #       gh api repos/Matt-B-007/CachyPlay/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
 #
 # Options:  --beta         newest beta instead of the newest stable release
-#           --version X    install version X (like 0.1.0-beta.15) instead of the newest
+#           --version X    install version X (like 0.1.0-beta.16) instead of the newest
 #           --from-source  build on this PC instead of downloading a ready-made build
 #           --no-launch    don't open CachyPlay at the end
 #           --uninstall    put every game back the way it was and remove CachyPlay
@@ -45,7 +45,7 @@ while [ $# -gt 0 ]; do
     --no-launch) LAUNCH=0 ;;
     --uninstall) UNINSTALL=1 ;;
     --version)
-        [ $# -ge 2 ] || die "--version needs a version number, like --version 0.1.0-beta.15"
+        [ $# -ge 2 ] || die "--version needs a version number, like --version 0.1.0-beta.16"
         VERSION="v${2#v}"
         shift
         ;;
@@ -144,7 +144,7 @@ pick_tag() {
     echo "$tag"
 }
 
-# Check the checksum file's signature with minisign, if it's installed. Releases from beta.15 on are
+# Check the checksum file's signature with minisign, if it's installed. Releases from beta.16 on are
 # signed; the app itself always checks signatures before it updates.
 check_signature() {
     sums="$1"
@@ -153,7 +153,7 @@ check_signature() {
         return 0
     fi
     if [ ! -f "$sums.minisig" ]; then
-        warn "This release isn't signed (releases before beta.15 weren't). Checked its checksum only."
+        warn "This release isn't signed (releases before beta.16 weren't). Checked its checksum only."
         return 0
     fi
     for key in $KEYS; do
@@ -180,7 +180,7 @@ download_release() {
     tag="$1"
     name="cachyplay-$tag-x86_64-linux"
     fetch "$tag" "$name.tar.zst" || return 3
-    # SHA256SUMS from beta.15 on; SHA256SUMS.txt before that.
+    # SHA256SUMS from beta.16 on; SHA256SUMS.txt before that.
     sums=""
     for f in SHA256SUMS SHA256SUMS.txt; do
         if fetch "$tag" "$f"; then

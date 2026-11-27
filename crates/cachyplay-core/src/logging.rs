@@ -57,7 +57,7 @@ pub fn numbered(paths: &Paths, n: usize) -> PathBuf {
 /// Move a full log aside: .log → .log.1 → .log.2, dropping the oldest.
 pub fn rotate(paths: &Paths) {
     let log = paths.log_file();
-    // The single old copy kept before beta.15.
+    // The single old copy kept before beta.16.
     let legacy = log.with_extension("log.old");
     if legacy.is_file() && !numbered(paths, 1).exists() {
         let _ = fs::rename(&legacy, numbered(paths, 1));

@@ -56,7 +56,7 @@ const SETTINGS_BACKUPS_KEPT: usize = 5;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
-    /// Format of this file (see `SETTINGS_VERSION`). Missing means the format before beta.15.
+    /// Format of this file (see `SETTINGS_VERSION`). Missing means the format before beta.16.
     #[serde(default)]
     pub settings_version: u32,
     #[serde(default)]
@@ -127,7 +127,7 @@ impl Settings {
 /// One step per format version: `MIGRATIONS[n]` turns a version-n file into version n+1.
 type Migration = fn(&mut serde_json::Value);
 const MIGRATIONS: [Migration; SETTINGS_VERSION as usize] = [
-    // 0 → 1 (beta.15): only the version number was added.
+    // 0 → 1 (beta.16): only the version number was added.
     |_| {},
 ];
 
@@ -253,7 +253,7 @@ pub fn parse_releases(json: &str) -> Result<Vec<Release>> {
                 })
         };
         let asset = find(&|n: &str| n.ends_with("-x86_64-linux.tar.zst"));
-        // New name first; releases before beta.15 only have SHA256SUMS.txt.
+        // New name first; releases before beta.16 only have SHA256SUMS.txt.
         let sums =
             find(&|n: &str| n == "SHA256SUMS").or_else(|| find(&|n: &str| n == "SHA256SUMS.txt"));
         let sig = sums

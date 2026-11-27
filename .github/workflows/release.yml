@@ -65,19 +65,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (the version pinned in rust-toolchain.toml)
         if: steps.ver.outputs.go == 'true'
+        run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         if: steps.ver.outputs.go == 'true'
 
-      - name: Tests (only for a tag pushed by hand; CI already tested otherwise)
+      - name: Run scripts/check.sh tests (only for a tag pushed by hand; CI already ran every check)
         if: steps.ver.outputs.go == 'true' && inputs.tested != 'true'
-        run: |
-          cargo test --workspace --locked
-          TZ=Asia/Tokyo cargo test --workspace --locked
+        run: sh scripts/check.sh tests
 
       # Generic x86-64: no target-cpu=native, so it runs on every CachyOS/Arch machine.
-      - name: Build
+      - name: Build release and run its quick self-test
         if: steps.ver.outputs.go == 'true'
         run: |
           cargo build --workspace --release --locked
@@ -87,7 +86,7 @@ jobs:
           ./target/release/cachyplay --self-test --quick
           ./target/release/cachyplay-gui --self-test --quick
 
-      - name: Package
+      - name: Package the download and SHA256SUMS
         if: steps.ver.outputs.go == 'true'
         run: |
           name="cachyplay-${{ steps.ver.outputs.tag }}-x86_64-linux"
@@ -97,7 +96,7 @@ jobs:
           (cd dist && tar --zstd -cf "$name.tar.zst" "$name" && sha256sum "$name.tar.zst" > SHA256SUMS)
           cp install.sh dist/install.sh
 
-      - name: Sign the checksums
+      - name: Sign SHA256SUMS (minisign) and check it against both public keys
         if: steps.ver.outputs.go == 'true'
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
@@ -124,7 +123,7 @@ jobs:
         with:
           subject-path: dist/*.tar.zst
 
-      - name: Release notes from CHANGELOG
+      - name: Write release notes from CHANGELOG
         if: steps.ver.outputs.go == 'true'
         run: |
           ver="${{ steps.ver.outputs.version }}"; base="${ver%%-*}"
@@ -133,7 +132,7 @@ jobs:
 
       # Draft first, then upload everything, then publish: a release is never visible without its
       # signature, so updaters can't see a half-uploaded one.
-      - name: Publish (draft, upload, publish)
+      - name: Publish (create draft, upload files, publish)
         if: steps.ver.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ github.token }}

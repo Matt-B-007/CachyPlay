@@ -22,7 +22,8 @@ Conditions can test `gpu.vendor`, `gpu.count`, `session`, `cpu.level` and `ntsyn
 
 ## Code
 
-- Run `cargo fmt`, `cargo clippy --all-targets` and `cargo test` before opening a pull request.
+- Run `sh scripts/check.sh` before opening a pull request. It runs exactly what CI runs (formatting,
+  clippy, tests, shell script checks, `cargo audit`, release self-test).
 - Anything that writes to Steam's files goes through `manage.rs`, which keeps the snapshot, backup and verification rules in one place.
 - The launch wrapper must stay fail-open. Any new step in `wrapper::prepare` must not be able to stop a game from launching.
 

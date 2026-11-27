@@ -1,0 +1,7 @@
+# The Rust version CI and the checks use, so a new Rust or clippy release can't change results
+# overnight. Raise it on purpose (and run scripts/check.sh) when moving to a newer Rust.
+# The oldest Rust that can build CachyPlay is `rust-version` in Cargo.toml.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

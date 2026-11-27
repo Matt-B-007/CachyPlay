@@ -11,7 +11,9 @@ key() { case "$1" in *-*) printf '%s\n' "$1" ;; *) printf '%s-zzz\n' "$1" ;; esa
 newest=""
 while IFS= read -r tag; do
   tag="${tag#v}"
-  [ -n "$tag" ] && [ "$tag" != "$new" ] || continue
+  if [ -z "$tag" ] || [ "$tag" = "$new" ]; then
+    continue
+  fi
   if [ -z "$newest" ] || [ "$(printf '%s\n%s\n' "$(key "$newest")" "$(key "$tag")" | sort -V | tail -n1)" = "$(key "$tag")" ]; then
     newest="$tag"
   fi

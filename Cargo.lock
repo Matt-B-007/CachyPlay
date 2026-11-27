@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "cachyplay"
-version = "0.1.0-beta.17"
+version = "0.1.0-beta.18"
 dependencies = [
  "anyhow",
  "cachyplay-core",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "cachyplay-core"
-version = "0.1.0-beta.17"
+version = "0.1.0-beta.18"
 dependencies = [
  "anyhow",
  "chrono",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "cachyplay-gui"
-version = "0.1.0-beta.17"
+version = "0.1.0-beta.18"
 dependencies = [
  "cachyplay-core",
  "serde",

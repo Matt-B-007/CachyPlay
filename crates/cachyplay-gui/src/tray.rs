@@ -239,7 +239,12 @@ pub fn update(app: &tauri::AppHandle, status: &Status) -> bool {
 /// A desktop notification (used when the tray is off). Best-effort: needs notify-send.
 pub fn notify(title: &str, body: &str) {
     let _ = std::process::Command::new("notify-send")
-        .args(["--app-name=CachyPlay", "--icon=cachyplay", title, body])
+        .args([
+            "--app-name=CachyPlay",
+            "--icon=io.github.matt-b-007.cachyplay",
+            title,
+            body,
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

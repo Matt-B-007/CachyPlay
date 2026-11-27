@@ -474,17 +474,11 @@ pub fn extra_rules(ev: &Evidence, out: &mut Vec<Suggestion>, root: &Root) {
 
     // Going back to the previous driver: only when it fits, never automatic.
     if let Some(t) = crate::report::driver_timeline(ev) {
-        let upd = ev
-            .driver_updates
-            .iter()
-            .filter(|u| u.package.contains("nvidia") && mine.first().is_some_and(|_| true))
-            .filter(|u| {
-                mine.iter()
-                    .map(|e| e.at)
-                    .min()
-                    .is_some_and(|first| u.at <= first)
-            })
-            .max_by_key(|u| u.at);
+        // The last real driver version change before the first crash (not nvidia-settings or
+        // OpenCL, and not a kernel module rebuild of the same version).
+        let upd = crate::advice::driver_context(ev)
+            .and_then(|c| c.version_change)
+            .filter(|u| u.package.contains("nvidia") && !mine.is_empty());
         let cheap_done = out.iter().filter(|s| s.status == Status::DidntHelp).count()
             + usize::from(
                 ruled_out(ev, out)
@@ -492,9 +486,11 @@ pub fn extra_rules(ev: &Evidence, out: &mut Vec<Suggestion>, root: &Root) {
                     .any(|r| r.starts_with("The Proton version")),
             );
         let newer_since = mine.iter().map(|e| e.at).max().and_then(|last| {
-            ev.driver_updates
-                .iter()
-                .find(|u| u.package.contains("nvidia") && u.at > last)
+            ev.driver_updates.iter().find(|u| {
+                u.package.contains("nvidia")
+                    && crate::advice::is_driver_package(&u.package)
+                    && u.at > last
+            })
         });
         if let (Some(u), true) = (upd, nvidia_hangs > 0 && cheap_done >= 3) {
             let od = old_driver(root, &u.from, &u.to);

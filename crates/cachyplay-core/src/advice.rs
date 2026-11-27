@@ -443,24 +443,58 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
 
     // 2. A graphics driver update shortly before system-wide trouble.
     if several {
-        let gpu_driver: Vec<&DriverUpdate> = ev
-            .driver_updates
-            .iter()
-            .filter(|u| u.package != "linux-cachyos")
-            .collect();
+        let ctx = driver_context(ev);
         let mut why: Vec<String> = crash_line().into_iter().collect();
-        if let Some(u) = gpu_driver.last() {
+        let fmt_gap = |from: NaiveDateTime, to: NaiveDateTime| {
+            let h = (to - from).num_hours();
+            if h < 48 {
+                format!("{h} hour{}", if h == 1 { "" } else { "s" })
+            } else {
+                format!("{} days", h / 24)
+            }
+        };
+        let mut priority = 15;
+        let closest = ctx.as_ref().and_then(|c| c.closest);
+        if let (Some(c), Some(u)) = (&ctx, closest) {
+            let rebuild = u.package.starts_with("linux");
             why.push(format!(
-                "{} was updated from {} to {} on {}.",
+                "{} was updated from {} to {} on {}, {} before {}'s first crash{}.",
                 u.package,
                 u.from,
                 u.to,
-                u.at.format("%b %-d at %H:%M")
+                u.at.format("%b %-d at %H:%M"),
+                fmt_gap(u.at, c.first_crash),
+                ev.game_name,
+                if rebuild {
+                    " (the kernel and its NVIDIA module)"
+                } else {
+                    ""
+                }
             ));
+            if let Some(v) = c.version_change.filter(|v| !std::ptr::eq(*v, u)) {
+                why.push(format!(
+                    "The driver itself last changed on {} ({} {} → {}).",
+                    v.at.format("%b %-d"),
+                    v.package,
+                    v.from,
+                    v.to
+                ));
+            }
+            if let Some(note) = ran_after_note(c) {
+                why.push(note);
+            }
+        } else if let Some(c) = &ctx {
+            if let Some(a) = c.after.first() {
+                why.push(format!(
+                    "No driver update came before the crashes started; {} ({}) came after, so it isn't the cause.",
+                    a.package,
+                    a.at.format("%b %-d")
+                ));
+                priority = 50;
+            }
         }
         why.push("Problems that start in several games at once usually come from the driver, not the games.".into());
-        let mut priority = 15;
-        if let Some(u) = gpu_driver.last() {
+        if let Some(u) = closest {
             let fine = others_fine(u.at);
             if !ev.nvidia_switch_helped.is_empty() {
                 why.push(format!(
@@ -945,12 +979,180 @@ fn install_proton_steps(tools: &[crate::compat::Tool]) -> Vec<String> {
     v
 }
 
+/// Whether a pacman package is part of the graphics driver: NVIDIA's driver and its kernel
+/// modules, Mesa and its Vulkan drivers. Not tools like nvidia-settings or OpenCL.
+pub fn is_driver_package(p: &str) -> bool {
+    let p = p.strip_prefix("lib32-").unwrap_or(p);
+    if p.starts_with("linux") {
+        return p.contains("nvidia");
+    }
+    matches!(
+        p,
+        "nvidia"
+            | "nvidia-open"
+            | "nvidia-dkms"
+            | "nvidia-open-dkms"
+            | "nvidia-utils"
+            | "nvidia-lts"
+            | "mesa"
+            | "vulkan-radeon"
+            | "vulkan-intel"
+            | "vulkan-nouveau"
+    ) || (p.starts_with("nvidia-") && p.ends_with("-utils"))
+}
+
+/// What the driver history says about when this game's crashes started.
+#[derive(Debug, Clone)]
+pub struct DriverContext<'a> {
+    /// This game's first GPU driver crash.
+    pub first_crash: NaiveDateTime,
+    /// The closest driver-related update before it (a kernel module rebuild counts).
+    pub closest: Option<&'a DriverUpdate>,
+    /// The newest real driver version change before it (not a rebuild of the same version).
+    pub version_change: Option<&'a DriverUpdate>,
+    /// Starts of this game after `version_change` and before the first crash that didn't crash,
+    /// with how long each ran (seconds).
+    pub ran_after: Vec<i64>,
+    /// The longest this game lasted before a crash (seconds): runs shorter than this prove little.
+    pub crashes_within: i64,
+    /// Driver updates that only came after the first crash (they can't have caused it).
+    pub after: Vec<&'a DriverUpdate>,
+}
+
+pub fn driver_context(ev: &Evidence) -> Option<DriverContext<'_>> {
+    let first_crash = ev
+        .events
+        .iter()
+        .filter(|e| e.app_id.as_deref() == Some(ev.app_id.as_str()))
+        .map(|e| e.at)
+        .min()?;
+    let base = |v: &str| {
+        v.rsplit_once('-')
+            .map(|(a, _)| a.to_string())
+            .unwrap_or_else(|| v.to_string())
+    };
+    let drivers: Vec<&DriverUpdate> = ev
+        .driver_updates
+        .iter()
+        .filter(|u| is_driver_package(&u.package))
+        .collect();
+    let closest = drivers
+        .iter()
+        .filter(|u| u.at <= first_crash)
+        .max_by_key(|u| u.at)
+        .copied();
+    let version_change = drivers
+        .iter()
+        .filter(|u| {
+            u.at <= first_crash && !u.package.starts_with("linux") && base(&u.from) != base(&u.to)
+        })
+        .max_by_key(|u| u.at)
+        .copied();
+    let all: Vec<&CrashEvent> = ev.events.iter().collect();
+    let runs = history::runs(&ev.sessions, &ev.app_id, &all);
+    let crashes_within = runs
+        .iter()
+        .filter(|r| r.outcome == history::Outcome::Crashed)
+        .filter_map(|r| r.session.duration())
+        .map(|d| d.num_seconds())
+        .max()
+        .unwrap_or(0);
+    let ran_after = version_change
+        .map(|u| {
+            runs.iter()
+                .filter(|r| r.session.start > u.at && r.session.start < first_crash)
+                .filter(|r| r.outcome != history::Outcome::Crashed)
+                .filter_map(|r| r.session.duration())
+                .map(|d| d.num_seconds())
+                .collect()
+        })
+        .unwrap_or_default();
+    let after = drivers
+        .iter()
+        .filter(|u| u.at > first_crash)
+        .copied()
+        .collect();
+    Some(DriverContext {
+        first_crash,
+        closest,
+        version_change,
+        ran_after,
+        crashes_within,
+        after,
+    })
+}
+
+/// "4 times (4–5 min each)", and whether that's long enough to count.
+pub fn ran_after_note(c: &DriverContext) -> Option<String> {
+    if c.ran_after.is_empty() {
+        return None;
+    }
+    let n = c.ran_after.len();
+    let lo = c.ran_after.iter().min().copied().unwrap_or(0) / 60;
+    let hi = c.ran_after.iter().max().copied().unwrap_or(0) / 60;
+    let span = if lo == hi {
+        format!("{lo} min")
+    } else {
+        format!("{lo}–{hi} min")
+    };
+    let long_enough = c
+        .ran_after
+        .iter()
+        .any(|d| *d > c.crashes_within && c.crashes_within > 0);
+    Some(format!(
+        "It ran {n} time{} after that update without crashing ({span}{}){}",
+        if n == 1 { "" } else { "s" },
+        if n == 1 { "" } else { " each" },
+        if long_enough {
+            ", longer than it lasts when it crashes, so that update alone probably isn't the cause."
+        } else {
+            format!(
+                ", but it crashes after up to {} min, so those runs were too short to clear it.",
+                c.crashes_within / 60
+            )
+            .leak()
+        }
+    ))
+}
+
+/// Whether two Proton names mean the same build: Steam's internal name, the folder name in launch
+/// commands, or its friendly form ("GE-Proton11-12-x86_64" = "GE-Proton11-12").
+fn same_tool(a: &str, b: &str) -> bool {
+    let norm = |x: &str| crate::compat::friendly(x).to_ascii_lowercase();
+    norm(a) == norm(b)
+}
+
+/// The Proton builds this game's GPU driver crashes happened on (folder names, with how many
+/// crashes), from every start Steam logged, not just the latest run of failures.
+fn crashed_on(ev: &Evidence) -> Vec<(String, usize)> {
+    let all: Vec<&CrashEvent> = ev.events.iter().collect();
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for r in history::runs(&ev.sessions, &ev.app_id, &all) {
+        if r.outcome != history::Outcome::Crashed {
+            continue;
+        }
+        let Some(t) = &r.session.tool else { continue };
+        match out.iter_mut().find(|(n, _)| same_tool(n, t)) {
+            Some(e) => e.1 += 1,
+            None => out.push((t.clone(), 1)),
+        }
+    }
+    out
+}
+
 fn compat_suggestion(
     ev: &Evidence,
     trouble: Option<&history::Trouble>,
     day: &dyn Fn(NaiveDateTime) -> String,
 ) -> Option<Suggestion> {
     let tried = trouble.map(|t| t.tools_tried()).unwrap_or_default();
+    let crashed = crashed_on(ev);
+    let crashed_with = |t: &crate::compat::Tool| {
+        crashed
+            .iter()
+            .find(|(f, _)| same_tool(f, &t.folder) || same_tool(f, &t.name))
+            .map(|(_, n)| *n)
+    };
     let failed: Vec<&(String, usize, usize)> =
         tried.iter().filter(|(_, _, bad)| *bad > 0).collect();
     let mut why = Vec::new();
@@ -983,9 +1185,32 @@ fn compat_suggestion(
     if let Some(name) = &ev.switched_tool {
         let tool = ev.tools.iter().find(|t| &t.name == name).cloned();
         let folder = tool.as_ref().map(|t| t.folder.clone()).unwrap_or_default();
-        let with: Vec<&(String, usize, usize)> =
-            tried.iter().filter(|(f, _, _)| *f == folder).collect();
+        let with: Vec<&(String, usize, usize)> = tried
+            .iter()
+            .filter(|(f, _, _)| same_tool(f, &folder))
+            .collect();
+        // Switched to the Proton it was already crashing on: nothing to test, it's ruled out.
+        let before = tool.as_ref().and_then(|t| {
+            let n = crashed_with(t)?;
+            let since = ev.switched_at?;
+            let after = ev
+                .events
+                .iter()
+                .filter(|e| e.app_id.as_deref() == Some(ev.app_id.as_str()) && e.at > since)
+                .count();
+            Some((n, after))
+        });
+        if let Some((n, _)) = before {
+            why.insert(
+                0,
+                format!(
+                    "The game already crashed on this Proton {n} time{} before the switch, so it can't be the fix.",
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
+        }
         let status = match with.first() {
+            _ if before.is_some() => Status::DidntHelp,
             Some((_, _, bad)) if *bad > 0 => Status::DidntHelp,
             Some(_) => Status::Worked,
             None if trouble.is_none()
@@ -1017,6 +1242,18 @@ fn compat_suggestion(
     }
 
     let used: Vec<&str> = tried.iter().map(|(f, _, _)| f.as_str()).collect();
+    let crashed_names: Vec<String> = crashed
+        .iter()
+        .map(|(f, n)| {
+            let shown = ev
+                .tools
+                .iter()
+                .find(|t| same_tool(&t.folder, f))
+                .map(|t| t.display.clone())
+                .unwrap_or_else(|| crate::compat::friendly(f));
+            format!("{shown} ({n} crash{})", if *n == 1 { "" } else { "es" })
+        })
+        .collect();
     // Prefer CachyOS's own Proton, then GE-Proton, then Valve's Experimental.
     let rank = |t: &crate::compat::Tool| {
         let n = t.name.to_lowercase();
@@ -1033,12 +1270,22 @@ fn compat_suggestion(
     let mut candidates: Vec<&crate::compat::Tool> = ev
         .tools
         .iter()
-        .filter(|t| !used.contains(&t.folder.as_str()))
-        .filter(|t| ev.forced_tool.as_deref() != Some(t.name.as_str()) || tried.is_empty())
+        .filter(|t| !used.iter().any(|u| same_tool(u, &t.folder)))
+        // Never the Proton the game already crashed on, or the one it's on now while failing.
+        .filter(|t| crashed_with(t).is_none())
+        .filter(|t| {
+            ev.forced_tool
+                .as_deref()
+                .is_none_or(|f| !same_tool(f, &t.name))
+                || (tried.is_empty() && crashed.is_empty())
+        })
         .collect();
     candidates.sort_by_key(|t| rank(t));
 
     if let Some(next) = candidates.first() {
+        if !crashed_names.is_empty() && why.is_empty() {
+            why.push(format!("It crashed on: {}.", crashed_names.join(", ")));
+        }
         let long_shot = failed.len() >= 2;
         if long_shot {
             why.push(format!(
@@ -2256,6 +2503,168 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// Halo Infinite, Nov 25–27 (Matt's beta.17 report): seven crashes on proton-cachyos-slr,
+    /// then CachyPlay "switched" the game to that same Proton.
+    fn halo_nov27(switched: bool) -> Evidence {
+        let cachy = "/usr/share/steam/compatibilitytools.d/proton-cachyos-slr";
+        let ge11 = "~/.local/share/Steam/compatibilitytools.d/GE-Proton11-11-x86_64";
+        let line = |t: &str, kind: &str, tool: &str| {
+            format!("[{t}] Game process {kind} : AppID 1240440 \"reaper SteamLaunch AppId=1240440 -- '{tool}'/proton waitforexitandrun  'x.exe'\", ProcID 1\n")
+        };
+        let mut log = String::new();
+        for (a, b, tool) in [
+            ("2026-11-23 18:28:28", "2026-11-23 18:32:28", ge11),
+            ("2026-11-24 13:55:36", "2026-11-24 14:00:36", ge11),
+            ("2026-11-25 16:48:43", "2026-11-25 16:53:50", ge11),
+            ("2026-11-25 16:55:43", "2026-11-25 16:59:25", cachy),
+            ("2026-11-25 17:04:59", "2026-11-25 17:08:25", cachy),
+            ("2026-11-25 17:13:27", "2026-11-25 17:16:25", cachy),
+            ("2026-11-25 17:20:10", "2026-11-25 17:29:33", cachy),
+            ("2026-11-25 19:20:06", "2026-11-25 19:26:51", cachy),
+            ("2026-11-25 19:36:05", "2026-11-25 19:41:59", cachy),
+        ] {
+            log += &line(a, "added", tool);
+            log += &line(b, "removed", tool);
+        }
+        let sessions = parse_steam_sessions(&log);
+        let kernel: String = ["2026-11-25T16:53:47", "2026-11-25T16:59:21", "2026-11-25T17:08:21", "2026-11-25T17:16:21", "2026-11-25T17:29:29", "2026-11-25T19:26:47", "2026-11-25T19:41:55"]
+            .iter()
+            .map(|t| format!("{t}-08:00 h kernel: NVRM: Xid (PCI:0000:02:00): 109, pid=1, name=HaloInfinite.ex, channel 0x10\n"))
+            .collect();
+        let now = at(2026, 11, 27, 8, 7, 0);
+        let events = crashmatch::crash_events(&parse_kernel_faults(&kernel, now), &sessions, now);
+        let tool = |name: &str, folder: &str, display: &str| crate::compat::Tool {
+            name: name.into(),
+            folder: folder.into(),
+            display: display.into(),
+        };
+        Evidence {
+            app_id: "1240440".into(),
+            game_name: "Halo Infinite".into(),
+            events,
+            sessions,
+            tools: vec![
+                tool(
+                    "proton_experimental",
+                    "Proton - Experimental",
+                    "Proton Experimental",
+                ),
+                tool("GE-Proton11-11", "GE-Proton11-11-x86_64", "GE-Proton11-11"),
+                tool(
+                    "proton-cachyos-slr",
+                    "proton-cachyos-slr",
+                    "proton-cachyos-11.0-20261015 (steam linux runtime)",
+                ),
+            ],
+            forced_tool: Some("proton-cachyos-slr".into()),
+            uses_proton: true,
+            switched_tool: switched.then(|| "proton-cachyos-slr".into()),
+            switched_at: switched.then(|| at(2026, 11, 26, 9, 0, 0)),
+            now: Some(now),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn driver_history_is_judged_from_the_first_crash() {
+        let up = |at: NaiveDateTime, p: &str, from: &str, to: &str| crate::evidence::DriverUpdate {
+            at,
+            package: p.into(),
+            from: from.into(),
+            to: to.into(),
+        };
+        let mut ev = halo_nov27(false);
+        ev.driver_updates = vec![
+            up(
+                at(2026, 11, 20, 6, 20, 38),
+                "nvidia-utils",
+                "620.70.06-2",
+                "620.73.04-1",
+            ),
+            up(
+                at(2026, 11, 21, 5, 54, 46),
+                "nvidia-settings",
+                "620.70.06-1",
+                "620.73.04-1",
+            ),
+            up(
+                at(2026, 11, 25, 7, 48, 49),
+                "linux-cachyos-nvidia-open",
+                "7.3.6-1",
+                "7.3.6-2",
+            ),
+            up(
+                at(2026, 11, 26, 13, 14, 25),
+                "linux-cachyos-nvidia-open",
+                "7.3.6-2",
+                "7.3.6-3",
+            ),
+        ];
+        let c = driver_context(&ev).unwrap();
+        assert_eq!(
+            c.closest.unwrap().to,
+            "7.3.6-2",
+            "the update just before the first crash, not the Nov 26 one"
+        );
+        assert_eq!(
+            c.version_change.unwrap().package,
+            "nvidia-utils",
+            "nvidia-settings isn't the driver"
+        );
+        assert_eq!(
+            c.ran_after.len(),
+            2,
+            "Nov 23 and Nov 24 ran without crashing"
+        );
+        let note = ran_after_note(&c).unwrap();
+        assert!(note.contains("too short to clear it"), "{note}");
+        assert_eq!(c.after.len(), 1);
+        let line = crate::report::driver_timeline(&ev).unwrap();
+        assert!(
+            line.contains("9 hours after linux-cachyos-nvidia-open 7.3.6-1 → 7.3.6-2"),
+            "{line}"
+        );
+        assert!(
+            line.contains("last changed on Nov 20 (nvidia-utils"),
+            "{line}"
+        );
+        assert!(
+            !line.contains("nvidia-settings") && !line.contains("7.3.6-3"),
+            "{line}"
+        );
+        assert!(is_driver_package("lib32-nvidia-utils") && !is_driver_package("opencl-nvidia"));
+        assert!(
+            !is_driver_package("linux-cachyos")
+                && is_driver_package("linux-cachyos-lts-nvidia-open")
+        );
+    }
+
+    #[test]
+    fn never_offers_or_counts_a_switch_to_the_proton_it_crashed_on() {
+        // Not switched yet: proton-cachyos-slr (6 crashes) is never the suggestion.
+        let s = suggest(&halo_nov27(false));
+        if let Some(c) = s.iter().find(|x| x.id == "compat_tool") {
+            let t = c.switch_tool.as_ref().map(|t| t.name.as_str());
+            assert_ne!(t, Some("proton-cachyos-slr"), "{}", c.title);
+            assert_ne!(t, Some("GE-Proton11-11"), "{}", c.title);
+        }
+        // Switched to it anyway: it's crossed off at once, with the reason.
+        let s = suggest(&halo_nov27(true));
+        let c = s.iter().find(|x| x.id == "compat_tool").unwrap();
+        assert_eq!(c.status, Status::DidntHelp, "{c:?}");
+        assert!(
+            c.why
+                .join(" ")
+                .contains("already crashed on this Proton 6 times"),
+            "{:?}",
+            c.why
+        );
+        // Names for the same build match: folder, internal name and the -x86_64 form.
+        assert!(same_tool("GE-Proton11-11-x86_64", "GE-Proton11-11"));
+        assert!(same_tool("proton-cachyos-slr", "proton-cachyos-slr"));
+        assert!(!same_tool("proton-cachyos", "proton-cachyos-slr"));
     }
 
     #[test]

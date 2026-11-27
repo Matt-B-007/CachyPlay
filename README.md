@@ -152,7 +152,7 @@ To remove every trace by hand, close Steam, run `cachyplay uninstall` first (it 
 ```bash
 rm -f ~/.local/bin/cachyplay ~/.local/bin/cachyplay-gui
 rm -f ~/.local/share/applications/io.github.matt-b-007.cachyplay.desktop ~/.local/share/applications/cachyplay-gui.desktop
-rm -f ~/.local/share/icons/hicolor/*/apps/cachyplay.svg ~/.local/share/icons/hicolor/*/apps/cachyplay.png
+rm -f ~/.local/share/icons/hicolor/*/apps/io.github.matt-b-007.cachyplay.* ~/.local/share/icons/hicolor/*/apps/cachyplay.*
 rm -rf ~/.local/share/cachyplay ~/.local/state/cachyplay ~/.cache/cachyplay ~/.config/cachyplay
 ```
 

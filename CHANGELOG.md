@@ -22,7 +22,8 @@ v0.1.0-beta.15 (never published: a script check failed on GitHub), v0.1.0-beta.1
 planned for beta.15: the window never freezes, signed updates, one window, crash notice; plus the
 script fix), v0.1.0-beta.17 (the family look: new colours, fonts, icons and logo, Help menu,
 Ctrl+K search, keyboard shortcuts, first-run tour, standard update/report/uninstall dialogs,
-optional tray icon).
+optional tray icon), v0.1.0-beta.18 (fixes from testing beta.17: no empty band at the top, the
+new icon shows in KDE, clearer Steam status, better Proton and driver advice).
 
 ### Added
 - **Help menu (beta.17)**: the **?** button at the top right has Report a problem, What's new,
@@ -304,6 +305,32 @@ optional tray icon).
   automatic dependency updates; `scripts/release-check.sh`, RELEASING.md and SUPPORT.md.
 
 ### Fixed
+- **Empty band at the top of the window (beta.18)**: beta.17 hid its icon set with an inline style,
+  which the window's security rules ignore on some systems, leaving 150 px of empty space above the
+  top bar. It's now hidden by the stylesheet and by its size, and a test stops inline styles
+  coming back.
+- **The new logo shows in KDE (beta.18)**: the icon is now named after the app
+  (`io.github.matt-b-007.cachyplay`, like the menu entry), the old `cachyplay` icons are removed,
+  and the desktop is told when icons change. KDE kept showing the old cyan icon from its own copy
+  until you logged out. The AUR package installs the menu entry and icons under the same name.
+- **Steam status colours (beta.18)**: green when Steam is open and CachyPlay can read it, grey when
+  it's closed (nothing wrong: every change can be made now), amber while it's closing or changes are
+  waiting, red when Steam isn't found. Closed used to be green.
+- **"Not working" is always red (beta.18)**: the status next to the game's name used the game
+  list's light, so it could say "Not working" in amber while a fix waited to be tried.
+- **Proton advice (beta.18)**: CachyPlay never suggests the Proton a game already crashed on, and a
+  switch to that same Proton is crossed off straight away ("already crashed on this Proton 6 times
+  before the switch"). Before, Halo Infinite was "switched" to proton-cachyos-slr, the build all
+  six crashes happened on, and CachyPlay waited for a test. Names for the same build match
+  (`GE-Proton11-11-x86_64` = `GE-Proton11-11`). Reports show when CachyPlay switched a game's Proton.
+- **Driver advice looks at the first crash (beta.18)**: "Check whether a driver update caused this"
+  named the newest update, even one installed after every crash (Nov 26 for Halo's Nov 25 crashes).
+  It now names the closest graphics update *before* the game's first crash, counting a kernel's
+  NVIDIA module rebuild (for Halo: linux-cachyos-nvidia-open 7.3.6-2, 9 hours before), says when the
+  driver version itself last changed, and says if the game ran after that update without crashing,
+  and whether those runs were long enough to clear it. Updates that only came after the crashes are
+  ruled out. The driver timeline in reports and the "go back to the older driver" step use the same
+  rules, and only count real driver packages (not nvidia-settings or OpenCL).
 - Constant refreshing (beta.14): the app no longer redraws every few seconds because Steam writes to
   its console log; only games starting or ending, crashes and changes count. While a game runs,
   only the "Playing now" card ticks over, and opened starts stay open.

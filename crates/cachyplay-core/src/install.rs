@@ -32,26 +32,62 @@ const ICON_PNGS: [(u32, &[u8]); 8] = [
     ),
 ];
 
+/// The icon's name in the icon theme: the app's ID, like the menu entry. (Until beta.17 it was
+/// "cachyplay"; KDE keeps its own copy of icons by name, so a new name makes it load the new
+/// picture instead of showing an old one until the next log-in.)
+pub const ICON_NAME: &str = APP_ID;
+
 /// Write the app icon (SVG and every PNG size) into ~/.local/share/icons, replacing older
-/// versions. Files already up to date aren't rewritten. Returns every icon file.
+/// versions and removing the old "cachyplay" icons. When anything changed, the desktop is told
+/// the icons changed. Returns every icon file now installed.
 fn write_icons(paths: &Paths) -> Result<Vec<PathBuf>> {
     let base = paths.home.join(".local/share/icons/hicolor");
     let mut files = Vec::new();
-    let mut put = |path: PathBuf, bytes: &[u8]| -> Result<()> {
+    let mut changed = false;
+    let mut put = |dir: &str, ext: &str, bytes: &[u8]| -> Result<()> {
+        let path = base.join(dir).join(format!("apps/{ICON_NAME}.{ext}"));
         if fs::read(&path).ok().as_deref() != Some(bytes) {
             atomic_write(&path, bytes)?;
+            changed = true;
+        }
+        let old = base.join(dir).join(format!("apps/cachyplay.{ext}"));
+        if fs::remove_file(&old).is_ok() {
+            changed = true;
         }
         files.push(path);
         Ok(())
     };
-    put(
-        base.join("scalable/apps/cachyplay.svg"),
-        ICON_SVG.as_bytes(),
-    )?;
+    put("scalable", "svg", ICON_SVG.as_bytes())?;
     for (n, png) in ICON_PNGS {
-        put(base.join(format!("{n}x{n}/apps/cachyplay.png")), png)?;
+        put(&format!("{n}x{n}"), "png", png)?;
+    }
+    if changed {
+        icons_changed(&base);
     }
     Ok(files)
+}
+
+/// Tell the desktop the icons in `base` changed: a newer folder date makes KDE and GTK reread
+/// them, and GTK's icon index is rebuilt if the tool for it is installed. Best-effort.
+fn icons_changed(base: &Path) {
+    let now = std::time::SystemTime::now();
+    for dir in [base.to_path_buf(), base.join("scalable/apps")] {
+        if let Ok(f) = fs::File::open(&dir) {
+            let _ = f.set_modified(now);
+        }
+    }
+    if let Some(parent) = base.parent() {
+        if let Ok(f) = fs::File::open(parent) {
+            let _ = f.set_modified(now);
+        }
+    }
+    if crate::sys::which("gtk-update-icon-cache").is_some() {
+        let _ = crate::sys::run(
+            "gtk-update-icon-cache",
+            &["-q", "-f", "-t", &base.to_string_lossy()],
+            std::time::Duration::from_secs(10),
+        );
+    }
 }
 
 /// The GUI is a separate binary on purpose: the launch wrapper (`cachyplay`) runs before every
@@ -69,7 +105,7 @@ pub const APP_ID: &str = "io.github.matt-b-007.cachyplay";
 
 pub fn desktop_entry(gui: &Path) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName=CachyPlay\nGenericName=Game Helper\nComment=One-click game tuning, crash help and bug reports\nExec={}\nIcon=cachyplay\nTerminal=false\nCategories=Game;Utility;\nKeywords=steam;proton;gaming;cachyos;\nStartupWMClass=cachyplay-gui\n",
+        "[Desktop Entry]\nType=Application\nName=CachyPlay\nGenericName=Game Helper\nComment=One-click game tuning, crash help and bug reports\nExec={}\nIcon={ICON_NAME}\nTerminal=false\nCategories=Game;Utility;\nKeywords=steam;proton;gaming;cachyos;\nStartupWMClass=cachyplay-gui\n",
         gui.display()
     )
 }
@@ -136,13 +172,16 @@ pub fn refresh_menu_entries(paths: &Paths) -> bool {
     // The icon may have changed with this version (and older installs only had the SVG).
     let icons = write_icons(paths).unwrap_or_default();
     if let Some(mut m) = read_json::<Manifest>(&paths.install_manifest()) {
-        let before = m.files.len();
+        let before = m.files.clone();
+        // Old "cachyplay" icon files are gone; the new ones are listed.
+        m.files
+            .retain(|f| f.exists() || !f.to_string_lossy().contains("/icons/"));
         for f in &icons {
             if !m.files.contains(f) {
                 m.files.push(f.clone());
             }
         }
-        if m.files.len() != before {
+        if m.files != before {
             let _ = write_json(&paths.install_manifest(), &m);
         }
     }
@@ -246,7 +285,10 @@ mod tests {
                 .join(".local/share/applications/cachyplay-gui.desktop"),
         )
         .unwrap();
-        assert!(alias.contains("NoDisplay=true") && alias.contains("Icon=cachyplay"));
+        assert!(
+            alias.contains("NoDisplay=true")
+                && alias.contains("Icon=io.github.matt-b-007.cachyplay")
+        );
         assert!(!d
             .path()
             .join(".local/share/applications/cachyplay.desktop")
@@ -255,11 +297,11 @@ mod tests {
         assert!(crate::sys::is_executable(&bin));
         assert!(d
             .path()
-            .join(".local/share/icons/hicolor/scalable/apps/cachyplay.svg")
+            .join(".local/share/icons/hicolor/scalable/apps/io.github.matt-b-007.cachyplay.svg")
             .exists());
         let png16 = d
             .path()
-            .join(".local/share/icons/hicolor/16x16/apps/cachyplay.png");
+            .join(".local/share/icons/hicolor/16x16/apps/io.github.matt-b-007.cachyplay.png");
         assert!(png16.exists(), "every PNG size is installed");
         fs::create_dir_all(paths.data.join("backups")).unwrap();
         fs::create_dir_all(&paths.config).unwrap();

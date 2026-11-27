@@ -288,6 +288,15 @@ pub fn create_with(
                     (None, None) => "no Proton prefix found (runs natively, or hasn't been started with Proton yet)".to_string(),
                 };
                 s.push_str(&format!("- Runs with: {runs}\n"));
+                if let (Some(tool), Some(at)) = (
+                    crate::compat::switched_to(c, &g.app_id),
+                    crate::compat::switched_at(c, &g.app_id),
+                ) {
+                    s.push_str(&format!(
+                        "- Proton switched by CachyPlay to {tool} on {} (Undo puts the previous one back)\n",
+                        at.format("%Y-%m-%d %H:%M")
+                    ));
+                }
             }
             match launches.first() {
                 Some(l) if l.running => {
@@ -833,59 +842,45 @@ pub fn vulkan_layers(summary: &str) -> Vec<String> {
 /// "Halo's first graphics crash came 4 days after NVIDIA 620.73.04 was installed; it ran 3
 /// times before that update without driver errors."
 pub fn driver_timeline(ev: &crate::advice::Evidence) -> Option<String> {
-    let first = ev
-        .events
-        .iter()
-        .filter(|e| e.app_id.as_deref() == Some(ev.app_id.as_str()))
-        .map(|e| e.at)
-        .min()?;
-    // Only real driver version changes: "7.3.6-1 → 7.3.6-2" is a rebuild of the same thing, and
-    // linux-* packages are kernels and their prebuilt modules, versioned by kernel, not driver.
-    let ver = |v: &str| {
-        v.rsplit_once('-')
-            .map(|(a, _)| a.to_string())
-            .unwrap_or_else(|| v.to_string())
-    };
-    let upd = ev
-        .driver_updates
-        .iter()
-        .filter(|u| u.at <= first && !u.package.starts_with("linux") && ver(&u.from) != ver(&u.to))
-        .max_by_key(|u| u.at)?;
-    let clean_before = ev
+    let c = crate::advice::driver_context(ev)?;
+    let u = c.closest?;
+    // A game first played after the update: nothing to compare with.
+    if !ev
         .sessions
         .iter()
-        .filter(|x| x.app_id == ev.app_id && x.start < upd.at)
-        .filter(|x| {
-            x.duration()
-                .is_some_and(|d| d.num_seconds() >= crate::history::SHORT)
-        })
-        .count();
-    if clean_before == 0 {
-        // The game wasn't played before that update, so there's nothing to compare with.
+        .any(|x| x.app_id == ev.app_id && x.start < u.at)
+    {
         return None;
     }
-    let days = (first - upd.at).num_days();
-    Some(format!(
-        "Driver timeline: {}'s first graphics crash came {} after {} {} → {} was installed ({}){}.",
+    let gap = c.first_crash - u.at;
+    let when = match gap.num_hours() {
+        h if h < 24 => format!("{h} hour{}", if h == 1 { "" } else { "s" }),
+        h if h < 48 => "1 day".to_string(),
+        h => format!("{} days", h / 24),
+    };
+    let mut line = format!(
+        "Driver timeline: {}'s first graphics crash came {when} after {} {} → {} was installed ({}){}.",
         ev.game_name,
-        match days {
-            0 => "the same day".to_string(),
-            1 => "1 day".to_string(),
-            d => format!("{d} days"),
-        },
-        upd.package,
-        upd.from,
-        upd.to,
-        upd.at.format("%b %-d"),
-        if clean_before > 0 {
-            format!(
-                "; it ran {clean_before} time{} before that update without driver errors",
-                if clean_before == 1 { "" } else { "s" }
-            )
-        } else {
-            String::new()
-        }
-    ))
+        u.package,
+        u.from,
+        u.to,
+        u.at.format("%b %-d"),
+        if u.package.starts_with("linux") { ", the kernel's NVIDIA module" } else { "" }
+    );
+    if let Some(v) = c.version_change.filter(|v| !std::ptr::eq(*v, u)) {
+        line.push_str(&format!(
+            " The driver version last changed on {} ({} {} → {}).",
+            v.at.format("%b %-d"),
+            v.package,
+            v.from,
+            v.to
+        ));
+    }
+    if let Some(note) = crate::advice::ran_after_note(&c) {
+        line.push(' ');
+        line.push_str(&note);
+    }
+    Some(line)
 }
 
 /// The extra sections of a general report: games and their state, the PC check, CachyPlay's
@@ -1261,8 +1256,8 @@ mod tests {
             ..Default::default()
         };
         let line = driver_timeline(&ev).unwrap();
-        assert_eq!(line, "Driver timeline: Halo Infinite's first graphics crash came 4 days after nvidia-utils 620.70.06-1 → 620.73.04-1 was installed (Nov 21); it ran 1 time before that update without driver errors.");
-        // A kernel-module rebuild (same version, new release) isn't a driver change.
+        assert_eq!(line, "Driver timeline: Halo Infinite's first graphics crash came 4 days after nvidia-utils 620.70.06-1 → 620.73.04-1 was installed (Nov 21).");
+        // A kernel-module rebuild just before the first crash is the closest change, so it's named.
         let mut rebuild = ev.clone();
         rebuild.driver_updates = vec![crate::evidence::DriverUpdate {
             at: t("2026-11-25 07:48"),
@@ -1270,7 +1265,8 @@ mod tests {
             from: "7.3.6-1".into(),
             to: "7.3.6-2".into(),
         }];
-        assert!(driver_timeline(&rebuild).is_none());
+        let line = driver_timeline(&rebuild).unwrap();
+        assert!(line.contains("linux-cachyos-nvidia-open 7.3.6-1 → 7.3.6-2 was installed (Nov 25), the kernel's NVIDIA module"), "{line}");
         // A game first played after the update: nothing to compare with.
         let mut new_game = ev.clone();
         new_game.sessions.clear();

@@ -101,17 +101,27 @@ function renderChrome() {
   const o = state.overview;
   $("version").textContent = o.version ? `v${o.version}` : "";
   const chip = $("steam-chip");
+  // Green: Steam is open and CachyPlay can read it. Grey: closed (nothing wrong; every change can
+  // be made now). Amber: closing, or changes are waiting for it to close. Red: Steam not found.
+  chip.hidden = false;
   if (o.steam) {
-    chip.hidden = false;
     const st = (state.live && state.live.steam) || o.steam.state || (o.steam.running ? "running" : "closed");
-    chip.className = `steam-chip${st !== "closed" ? " running" : ""}`;
+    const waiting = ((state.live && state.live.waiting) || []).length;
+    const kind = st === "closing" || (st === "running" && waiting) ? "busy" : st === "running" ? "open" : "closed";
+    chip.className = `steam-chip ${kind}`;
+    chip.title = kind === "closed"
+      ? "Steam is closed: CachyPlay can make every change right away."
+      : kind === "busy" ? "Changes are waiting for Steam to close." : "Steam is open and CachyPlay can read it.";
     chip.replaceChildren(
       h("span", { class: "dot" }),
-      h("span", {}, st === "running" ? "Steam is open" : st === "closing" ? "Steam is closing…" : "Steam is closed"),
+      h("span", {}, st === "closing" ? "Steam is closing…" : st === "running"
+        ? (waiting ? `Steam is open · ${waiting} waiting` : "Steam is open") : "Steam is closed"),
       h("span", { class: "who" }, o.steam.persona || `account ${o.steam.account_id}`)
     );
   } else {
-    chip.hidden = true;
+    chip.className = "steam-chip missing";
+    chip.title = o.steam_error || "Install Steam and log in once.";
+    chip.replaceChildren(h("span", { class: "dot" }), h("span", {}, "Steam not found"));
   }
 }
 
@@ -289,6 +299,14 @@ function stageLabel(d) {
 
 const LIGHT_LABEL = { green: "Runs fine", yellow: "Works with a fix", red: "Not working", grey: "Not played lately" };
 
+/* The status chip's colour always matches its words: "Not working" is red, testing or working
+   with a fix is amber, runs fine is green (the game list's light can lag behind the status). */
+const STAGE_LIGHT = { not_working: "red", testing: "yellow", seems_to_work: "yellow", works_with_fix: "yellow", runs_fine: "green" };
+function stageLight(d, light) {
+  const p = insightsFor(d.summary.app_id)?.progress;
+  return (p && STAGE_LIGHT[p.stage]) || light;
+}
+
 /* The three lines at the top of a game (what happened, why, what to do) and one main button. */
 function hero(d) {
   const s = d.summary;
@@ -333,7 +351,7 @@ function hero(d) {
     h("div", { class: "hero-text" },
       h("div", { class: "hero-title" },
         h("h1", {}, s.name),
-        h("span", { class: `light-chip ${light}` }, h("span", { class: `light ${light}` }), stageLabel(d) || LIGHT_LABEL[light]),
+        h("span", { class: `light-chip ${stageLight(d, light)}` }, h("span", { class: `light ${stageLight(d, light)}` }), stageLabel(d) || LIGHT_LABEL[light]),
         rating ? h("button", { class: `protondb ${rating.tier}`, title: `${rating.meaning} (${rating.reports} reports on ProtonDB)`, onclick: () => openUrl(rating.url) }, `ProtonDB: ${rating.tier}`) : null),
       ...lines,
       h("div", { class: "hero-actions" },

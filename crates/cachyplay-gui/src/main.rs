@@ -1494,6 +1494,27 @@ mod tests {
         }
     }
 
+    /// The window's security rules (style-src 'self') ignore inline styles, so the page must not
+    /// rely on any: in beta.17 a `style="display:none"` was ignored and left an empty band.
+    #[test]
+    fn no_inline_styles() {
+        let html = include_str!("../ui/index.html");
+        assert!(
+            !html.contains(" style="),
+            "index.html has an inline style attribute"
+        );
+        assert!(!html.contains("<style"), "index.html has a <style> block");
+        let js = include_str!("../ui/app.js");
+        assert!(
+            !js.contains("setAttribute(\"style\""),
+            "app.js sets a style attribute"
+        );
+        assert!(
+            !js.contains(" style: "),
+            "app.js passes a style attribute to h()"
+        );
+    }
+
     /// A line with a #rgb/#rrggbb colour or rgb()/rgba() in it (ids like href="#x" don't count).
     fn regex_lite_hex() -> impl Fn(&str) -> bool {
         |l: &str| {

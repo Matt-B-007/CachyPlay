@@ -45,10 +45,12 @@ package() {
   cd "CachyPlay-$pkgver"
   install -Dm755 target/release/cachyplay "$pkgdir/usr/bin/cachyplay"
   install -Dm755 target/release/cachyplay-gui "$pkgdir/usr/bin/cachyplay-gui"
-  install -Dm644 "$srcdir/cachyplay.desktop" "$pkgdir/usr/share/applications/cachyplay.desktop"
-  install -Dm644 assets/cachyplay.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/cachyplay.svg"
+  # Named after the app ID: Wayland desktops match the window to this entry (and its icon) by it.
+  local id=io.github.matt-b-007.cachyplay
+  install -Dm644 "$srcdir/cachyplay.desktop" "$pkgdir/usr/share/applications/$id.desktop"
+  install -Dm644 assets/cachyplay.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$id.svg"
   for n in 16 24 32 48 64 128 256 512; do
-    install -Dm644 "assets/icons/cachyplay-$n.png" "$pkgdir/usr/share/icons/hicolor/${n}x${n}/apps/cachyplay.png"
+    install -Dm644 "assets/icons/cachyplay-$n.png" "$pkgdir/usr/share/icons/hicolor/${n}x${n}/apps/$id.png"
   done
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"

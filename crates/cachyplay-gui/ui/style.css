@@ -1,4 +1,7 @@
 * { box-sizing: border-box; }
+/* The icon sprite (a hidden SVG of symbols). Hidden here, not with an inline style: the window's
+   security rules ignore inline styles, which left a 150 px empty band at the top in beta.17. */
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 [hidden] { display: none !important; }
 
 html, body { height: 100%; }
@@ -83,8 +86,11 @@ code {
   display: inline-flex; align-items: center; gap: var(--s2); height: 32px;
   padding: 0 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--border); font-size: 12.5px;
 }
-.steam-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
-.steam-chip.running .dot { background: var(--warning); }
+.steam-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.steam-chip.open .dot { background: var(--success); }
+.steam-chip.busy .dot { background: var(--warning); }
+.steam-chip.missing .dot { background: var(--error); }
+.steam-chip.missing { color: var(--error); }
 .steam-chip .who { color: var(--muted); }
 .update-pill {
   height: 32px; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);

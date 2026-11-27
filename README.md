@@ -4,6 +4,14 @@
   <p><strong>One-click Linux game tuning, crash help and timestamped bug reports for CachyOS.</strong></p>
 </div>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/screenshot-light.png" />
+    <img src="docs/screenshot-dark.png" alt="CachyPlay: the game list with traffic lights, and a game page saying what happened, why, and what to do" width="800" />
+  </picture>
+</p>
+
 ---
 
 CachyPlay sits between Steam and your game. It applies known fixes for that game, shows you every change it makes, records how each launch went, and can undo everything. It never edits your system: drivers, kernels and packages are left alone.
@@ -27,11 +35,11 @@ That's it. It downloads the newest ready-made build from GitHub Releases, checks
 
 **From the zip instead:** on GitHub click **Code → Download ZIP**, extract it, right-click inside the folder → **Open Terminal Here**, and run `sh install.sh`. If no ready-made build of that version is on GitHub yet, it builds CachyPlay on your PC (after asking to install the build tools with pacman). Then you can delete the folder.
 
-Installer options: `--beta`, `--from-source`, `--no-launch`. The desktop app needs WebKitGTK (`webkit2gtk-4.1`), which CachyOS installs with most desktops.
+Installer options: `--beta`, `--version X`, `--from-source`, `--no-launch`, `--uninstall`. The desktop app needs WebKitGTK (`webkit2gtk-4.1`), which CachyOS installs with most desktops.
 
 ## Use
 
-Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix (or a fix is being tested), red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. The page updates by itself while it's open: when a game starts, ends or crashes, and when Steam opens or closes. Nothing runs while the window is minimized or hidden (except finishing changes that wait for Steam to close), and opening CachyPlay again just brings the open window to the front.
+Open **CachyPlay** from your app menu. Your games are on the left with a traffic light: green runs fine, yellow works with a fix (or a fix is being tested), red not working, grey not played lately. Pick a game and the top of the page tells you, in three lines, **what happened**, **why** (and how sure CachyPlay is), and **what to do**. If there's a one-click fix, press **Fix it**. The page updates by itself while it's open: when a game starts, ends or crashes, and when Steam opens or closes. Nothing is redrawn while the window is minimized or hidden (a light check every 10 seconds keeps the tray icon or crash notifications current and finishes changes that wait for Steam to close), and opening CachyPlay again just brings the open window to the front. A new install starts with a short tour; you can replay it from Help.
 
 After a fix, a game moves through **Testing the fix → Seems to work → Works with a fix**, with the fix named. A clean run is twice as long as the game used to last before crashing (at least 10 minutes, at most an hour), and "Works with a fix" needs 3 clean runs, or 2 adding up to an hour. A new crash after the fix sends it back to red; crashes from before the fix no longer count. Every start counts, even with CachyPlay off.
 
@@ -41,11 +49,15 @@ After a fix, a game moves through **Testing the fix → Seems to work → Works 
 - **Steam open?** Fixes and your settings work right away. Turning CachyPlay on or off, switching Proton and resetting Windows files wait and happen the moment Steam closes; **Close Steam for me** does it in one click and offers to reopen Steam. If you replace CachyPlay's part of the launch options in Steam, the game page offers **Put CachyPlay back** (keeping your new options).
 - When a game is broken, a card compares it with games that run fine on your PC.
 
-The gear icon opens Settings: updates, a **PC check** for common Linux gaming problems, light/dark theme (it follows your desktop, and is dark when the desktop doesn't say), big-screen mode for the TV with controller support, optional ProtonDB ratings, and uninstall. Problems the PC check finds also show as a banner.
+At the top right: the update button (only when there's an update), **Help (?)** with Report a problem, What's new, Keyboard shortcuts, Show the tour and About, and the gear for **Settings**: General (an optional tray icon), Appearance (System / Dark / Light, big-screen mode for the TV with controller support), Updates, Privacy (optional ProtonDB ratings, the bug reports you saved), a **PC check** for common Linux gaming problems, OBS game capture, Your game settings, Advanced (self-test, restore all games) and About & uninstall. Problems the PC check finds also show as a banner.
+
+**Keyboard:** Ctrl+K searches everything (games, fixes, settings and actions), Ctrl+, opens Settings, **?** lists the shortcuts, F1 opens Help, **/** searches games, Esc goes back, Ctrl+Q quits.
+
+**Tray icon (optional):** turn it on in Settings › General. It's lit while a game runs, has a red badge when CachyPlay is off for the game you're playing, an amber dot while a fix is being tested, a change waits for Steam or an update is ready, a red dot after a crash, and is grey when Steam isn't found. It needs `libayatana-appindicator` (`sudo pacman -S libayatana-appindicator`). With the tray off, a crash while CachyPlay is in the background shows a desktop notification.
 
 From a terminal: `cachyplay doctor` or `cachyplay --self-test` (PC check and self-test; `--self-test --quick` only checks CachyPlay itself starts), `cachyplay --report`, `cachyplay --update`, `cachyplay --rollback`, `cachyplay --uninstall`, `cachyplay try <appid> "SETTINGS"`, `cachyplay suggest <appid>`, `cachyplay fix <appid> <fix>`, `cachyplay reset-prefix <appid> [--undo | --delete-kept]`, `cachyplay card <appid> on|off`, `cachyplay report <appid>`.
 
-Need help? See [SUPPORT.md](SUPPORT.md). Making a release? See [RELEASING.md](RELEASING.md).
+Need help? See [SUPPORT.md](SUPPORT.md). Found a security problem? See [SECURITY.md](SECURITY.md). Making a release? See [RELEASING.md](RELEASING.md).
 
 ## How it works
 
@@ -71,7 +83,13 @@ When the game starts, CachyPlay applies the game's fix file (environment variabl
 
 ## Privacy
 
-CachyPlay collects no telemetry. Its only network requests are checking GitHub for app updates, and ProtonDB ratings if you turn them on (only the game's AppID is sent). Bug reports stay on your machine until you choose to share them. Before a report is written, these are replaced: your home folder (`~`, also in Windows-style paths like `Z:\home\you`), user name (`<user>`), computer name (`<host>`), Steam account IDs (`<steamid>`; game IDs stay), Steam account number and name (`<account>`, `<persona>`), IP and MAC addresses (`<ip>`, `<mac>`), and anything that looks like a token or password (`<secret>`).
+**Never collected:** CachyPlay has no telemetry, no analytics, no accounts and no ads. It never sends your game list, play times, crash details, hardware details, files or settings anywhere.
+
+**What goes over the network, and only this:** checking GitHub Releases for app updates (no personal details; once a day, or when you press Check now, and the daily check can be turned off), and ProtonDB ratings if you turn them on (only the game's AppID).
+
+**Bug reports** stay on your PC until you choose to share them yourself (by attaching the file to a GitHub issue or a forum post).
+
+Before a report is written, these are replaced: your home folder (`~`, also in Windows-style paths like `Z:\home\you`), user name (`<user>`), computer name (`<host>`), Steam account IDs (`<steamid>`; game IDs stay), Steam account number and name (`<account>`, `<persona>`), IP and MAC addresses (`<ip>`, `<mac>`), and anything that looks like a token or password (`<secret>`).
 
 Where CachyPlay keeps its files: settings in `~/.config/cachyplay`, logs and crash traces in `~/.local/state/cachyplay` (logs at most 1 MB each, 3 kept; the last 10 crash traces), downloads in `~/.cache/cachyplay`, the programs in `~/.local/bin`. Game data (fixes, what's been tried, notes) is in `~/.local/share/cachyplay`, which the family standard allows for app data.
 
@@ -116,7 +134,7 @@ From the terminal: `cachyplay obs 1240440 on`, `cachyplay obs all on`. If `obs-g
 
 ## Bug reports
 
-Use **Save bug report** on a game to capture that game's logs, or the **Bug reports** button at the top for a general report. Reports are saved to your Desktop as `cachyplay-bug-…-YYYY-MM-DD_HH-MM-SS.zip`, and the Bug reports screen lists them. To get help, open an issue on GitHub and attach the zip. If a game closes early, CachyPlay shows a desktop notification.
+**Report a problem** (on a game, or in Help for a general report) asks for a short summary and what happened, and shows a preview of what's included. Then: **Save to file**, **Copy report** or **Open log folder**. To send it, **Open on GitHub** fills in an issue with your summary and the system details and asks you to attach the saved file; there are also **NVIDIA forum** and the game's **Steam discussions** when they fit. Reports are saved to your Desktop as `cachyplay-bug-…-YYYY-MM-DD_HH-MM-SS.zip` and listed in Settings › Privacy. Every report starts with the app, version, channel, install type, distro, desktop, Wayland/X11 and kernel. Every error message, and the "closed unexpectedly" notice, has a **Report** button.
 
 ## Uninstall
 
@@ -127,13 +145,14 @@ sudo pacman -Rns cachyplay     # only if you installed from the AUR
 
 **Keep what works:** with `--keep-settings` (on by default in the app), each game's working settings, such as a fix you applied, are written straight into its Steam launch options before CachyPlay is removed, so the game keeps running the same way. A copy goes to `CachyPlay game settings.txt` on your Desktop. You can see and copy every game's settings any time in Settings → Your game settings, or with `cachyplay settings`.
 
-Save and config backups are kept unless you pass `--remove-backups`. Bug reports on your Desktop are never deleted. You can also uninstall from the app: Settings → Uninstall CachyPlay.
+CachyPlay's settings and logs are kept unless you pass `--delete-settings` (in the app: **Also delete my settings and logs**, off by default), so a reinstall picks up where you left off. Save and config backups are kept unless you pass `--remove-backups`. Bug reports on your Desktop are never deleted. You can also uninstall from the app: Settings → About & uninstall → **Uninstall CachyPlay…**
 
 To remove every trace by hand, close Steam, run `cachyplay uninstall` first (it puts your games back), then:
 
 ```bash
 rm -f ~/.local/bin/cachyplay ~/.local/bin/cachyplay-gui
-rm -f ~/.local/share/applications/cachyplay.desktop ~/.local/share/icons/hicolor/scalable/apps/cachyplay.svg
+rm -f ~/.local/share/applications/io.github.matt-b-007.cachyplay.desktop ~/.local/share/applications/cachyplay-gui.desktop
+rm -f ~/.local/share/icons/hicolor/*/apps/cachyplay.svg ~/.local/share/icons/hicolor/*/apps/cachyplay.png
 rm -rf ~/.local/share/cachyplay ~/.local/state/cachyplay ~/.cache/cachyplay ~/.config/cachyplay
 ```
 

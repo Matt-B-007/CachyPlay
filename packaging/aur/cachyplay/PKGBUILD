@@ -11,6 +11,8 @@ makedepends=('cargo')
 optdepends=(
   'game-performance: CachyOS low-latency gaming profile while games run'
   'vulkan-tools: GPU details in bug reports'
+  'libayatana-appindicator: the optional tray icon'
+  'libnotify: desktop notifications when the tray icon is off'
 )
 conflicts=('cachyplay-beta')
 provides=('cachyplay')
@@ -45,6 +47,9 @@ package() {
   install -Dm755 target/release/cachyplay-gui "$pkgdir/usr/bin/cachyplay-gui"
   install -Dm644 "$srcdir/cachyplay.desktop" "$pkgdir/usr/share/applications/cachyplay.desktop"
   install -Dm644 assets/cachyplay.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/cachyplay.svg"
+  for n in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "assets/icons/cachyplay-$n.png" "$pkgdir/usr/share/icons/hicolor/${n}x${n}/apps/cachyplay.png"
+  done
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

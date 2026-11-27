@@ -6,15 +6,15 @@
 2. Press **Fix it** if it's offered. After you play, CachyPlay asks whether it worked: answer it, so
    the next suggestion is better.
 3. Still stuck? Open the game's **History** tab: **Tell the developer** has a short text to post in
-   the game's Steam discussions, and **Save bug report** makes a zip with the logs.
+   the game's Steam discussions, and **Report a problem** saves a zip with the logs.
 
 ## CachyPlay itself misbehaves
 
-1. Settings → **About & self-test** → **Test CachyPlay's setup**. It checks that CachyPlay is
-   installed, can read Steam, and that its launch options are intact.
-2. Save a bug report (the bug icon at the top right) and open an issue on GitHub with the
-   "Bug report" template. Attach the zip. Your home folder, username, Steam IDs, Steam name,
-   hostname and tokens are removed before it's saved.
+1. Settings → **Advanced** → **Test CachyPlay's setup**. It checks that CachyPlay is installed,
+   can read Steam, and that its launch options are intact.
+2. **Help (?) → Report a problem**: type what happened, press **Save to file**, then **Open on
+   GitHub** and attach the zip. Your home folder, user name, computer name, Steam IDs, IP
+   addresses and tokens are replaced before it's saved.
 3. From a terminal, `cachyplay doctor` prints the same checks.
 
 ## What to expect

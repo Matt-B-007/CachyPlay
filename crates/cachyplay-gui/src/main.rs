@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
+
+mod tray;
 
 type CmdResult<T> = Result<T, String>;
 
@@ -336,10 +338,17 @@ struct ReportResult {
     folder: String,
     name: String,
     files: Vec<String>,
+    /// The saved summary (personal details removed), for "Copy report".
+    text: String,
 }
 
+/// Save a bug report, with what the person wrote in the Report a problem dialog (if anything).
 #[tauri::command]
-async fn create_report(app_id: Option<String>) -> CmdResult<ReportResult> {
+async fn create_report(
+    app_id: Option<String>,
+    summary: Option<String>,
+    description: Option<String>,
+) -> CmdResult<ReportResult> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = paths()?;
         let c = ctx(&p).ok();
@@ -347,7 +356,12 @@ async fn create_report(app_id: Option<String>) -> CmdResult<ReportResult> {
             (Some(id), Some(c)) => c.steam.find_game(id),
             _ => None,
         };
-        let r = report::create(&p, c.as_ref(), g.as_ref()).map_err(|e| format!("{e:#}"))?;
+        let note = report::UserNote {
+            summary: summary.unwrap_or_default(),
+            description: description.unwrap_or_default(),
+        };
+        let r = report::create_with(&p, c.as_ref(), g.as_ref(), Some(&note))
+            .map_err(|e| format!("{e:#}"))?;
         Ok(ReportResult {
             folder: r
                 .path
@@ -361,10 +375,67 @@ async fn create_report(app_id: Option<String>) -> CmdResult<ReportResult> {
                 .unwrap_or_default(),
             path: r.path.display().to_string(),
             files: r.files,
+            text: r.text,
         })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The header lines every report starts with (shown in the Report dialog's preview).
+#[tauri::command(async)]
+fn report_header() -> CmdResult<String> {
+    Ok(report::header_text(&paths()?))
+}
+
+/// Where reports are saved and where CachyPlay's logs are.
+#[tauri::command(async)]
+fn report_folders() -> CmdResult<serde_json::Value> {
+    let p = paths()?;
+    Ok(serde_json::json!({
+        "reports": p.report_dir().display().to_string(),
+        "logs": p.state.display().to_string(),
+    }))
+}
+
+/// Set once at start: no CachyPlay settings existed before this run (a new install).
+static NEW_INSTALL: AtomicBool = AtomicBool::new(false);
+/// Set once at start: the version used before this one, if CachyPlay was just updated.
+static UPDATED_FROM: OnceLock<Option<String>> = OnceLock::new();
+
+#[tauri::command]
+fn app_info() -> serde_json::Value {
+    serde_json::json!({
+        "new_install": NEW_INSTALL.load(Ordering::Relaxed),
+        "updated_from": UPDATED_FROM.get().cloned().flatten(),
+        "version": cachyplay_core::VERSION,
+        "repo": update::REPO,
+        "repo_private": true,
+    })
+}
+
+/// "What's new" in this version, from the changelog built into the app.
+#[tauri::command]
+fn whats_new() -> String {
+    update::whats_new(
+        include_str!("../../../CHANGELOG.md"),
+        cachyplay_core::VERSION,
+    )
+}
+
+/// "Skip this version" (or None to stop skipping).
+#[tauri::command(async)]
+fn skip_version(tag: Option<String>) -> CmdResult<()> {
+    let p = paths()?;
+    let mut s = update::Settings::load(&p);
+    s.skipped_version = tag;
+    s.save(&p).map_err(|e| format!("{e:#}"))
+}
+
+/// Ctrl+Q: close normally.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 /// Open a folder in the file manager.
@@ -462,7 +533,11 @@ fn export_settings() -> CmdResult<String> {
 }
 
 #[tauri::command(async)]
-fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
+fn uninstall(
+    remove_backups: bool,
+    keep_settings: bool,
+    delete_settings: Option<bool>,
+) -> CmdResult<String> {
     let p = paths()?;
     let mut saved = None;
     if keep_settings {
@@ -483,7 +558,8 @@ fn uninstall(remove_backups: bool, keep_settings: bool) -> CmdResult<String> {
         .ok()
         .and_then(|c| cachyplay_core::compat::kept_copies_note(&c));
     let restored = restore_everything_with(&p, keep_settings)?;
-    install::remove_user_files(&p, remove_backups).map_err(|e| format!("{e:#}"))?;
+    install::remove_user_files(&p, remove_backups, delete_settings.unwrap_or(false))
+        .map_err(|e| format!("{e:#}"))?;
     let exe = std::env::current_exe().unwrap_or_default();
     let kept = restored
         .iter()
@@ -770,14 +846,18 @@ fn app_settings() -> CmdResult<update::Settings> {
     Ok(update::Settings::load(&paths()?))
 }
 
-/// Change one display or privacy setting: "protondb", "big_screen" (true/false) or "theme".
+/// Change one setting: "protondb", "big_screen", "daily_check", "tour_seen", "tray" (true/false)
+/// or "theme".
 #[tauri::command(async)]
-fn set_app_setting(key: String, value: serde_json::Value) -> CmdResult<()> {
+fn set_app_setting(app: tauri::AppHandle, key: String, value: serde_json::Value) -> CmdResult<()> {
     let p = paths()?;
     let mut s = update::Settings::load(&p);
     match key.as_str() {
         "protondb" => s.protondb = value.as_bool().unwrap_or(false),
         "big_screen" => s.big_screen = value.as_bool().unwrap_or(false),
+        "daily_check" => s.daily_check = value.as_bool().unwrap_or(true),
+        "tour_seen" => s.tour_seen = value.as_bool().unwrap_or(true),
+        "tray" => s.tray = value.as_bool().unwrap_or(false),
         "theme" => {
             s.theme = value
                 .as_str()
@@ -786,20 +866,19 @@ fn set_app_setting(key: String, value: serde_json::Value) -> CmdResult<()> {
         }
         _ => return Err(format!("unknown setting {key}")),
     }
-    s.save(&p).map_err(|e| format!("{e:#}"))
-}
-
-/// KDE's accent color (from ~/.config/kdeglobals), as "#rrggbb", to match the desktop.
-#[tauri::command(async)]
-fn desktop_accent() -> Option<String> {
-    let p = paths().ok()?;
-    let text = std::fs::read_to_string(p.home.join(".config/kdeglobals")).ok()?;
-    let line = text.lines().find(|l| l.starts_with("AccentColor="))?;
-    let rgb: Vec<u8> = line["AccentColor=".len()..]
-        .split(',')
-        .filter_map(|x| x.trim().parse().ok())
-        .collect();
-    (rgb.len() == 3).then(|| format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
+    s.save(&p).map_err(|e| format!("{e:#}"))?;
+    if key == "tray" {
+        let on = s.tray;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = app.clone();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(tray::apply(&handle, on));
+        })
+        .map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())??;
+        CHECK_NOW.store(true, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 /// "dark" or "light" from the desktop's own settings, or None if it doesn't say.
@@ -827,11 +906,13 @@ fn open_url(url: String) -> CmdResult<()> {
 async fn update_status(force: Option<bool>) -> CmdResult<update::UpdateStatus> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = paths()?;
-        Ok(if force.unwrap_or(true) {
+        let st = if force.unwrap_or(true) {
             update::check(&p)
         } else {
             update::check_background(&p)
-        })
+        };
+        tray::UPDATE_READY.store(st.available, Ordering::Relaxed);
+        Ok(st)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -924,13 +1005,14 @@ static FOCUSED: AtomicBool = AtomicBool::new(true);
 static CHECK_NOW: AtomicBool = AtomicBool::new(true);
 
 /// How long the watcher waits between looks.
-fn watch_interval(visible: bool, focused: bool, waiting: bool) -> Option<Duration> {
+fn watch_interval(visible: bool, focused: bool, waiting: bool) -> Duration {
     match (visible, focused) {
-        (true, true) => Some(Duration::from_secs(3)),
-        (true, false) => Some(Duration::from_secs(10)),
-        // Hidden: only keep an eye on Steam if changes are waiting for it to close.
-        (false, _) if waiting => Some(Duration::from_secs(5)),
-        (false, _) => None,
+        (true, true) => Duration::from_secs(3),
+        (true, false) => Duration::from_secs(10),
+        // Hidden: the window isn't redrawn at all; a light look keeps the tray or notifications
+        // current and runs changes waiting for Steam to close.
+        (false, _) if waiting => Duration::from_secs(5),
+        (false, _) => Duration::from_secs(10),
     }
 }
 
@@ -953,38 +1035,76 @@ fn watch(app: tauri::AppHandle) {
     let mut last_steam: Option<SteamState> = None;
     let mut last_look = Instant::now() - Duration::from_secs(60);
     let mut pending_ran: Vec<String> = Vec::new();
+    // The tray/notification status, worked out again only when something changed.
+    let mut status_key: Option<(String, SteamState, bool, bool)> = None;
+    let mut last_status: Option<tray::Status> = None;
     loop {
         std::thread::sleep(Duration::from_millis(250));
         let Ok(p) = paths() else { continue };
         let visible = VISIBLE.load(Ordering::Relaxed);
         let waiting_now = !live::queue(&p).is_empty();
-        let due = match watch_interval(visible, FOCUSED.load(Ordering::Relaxed), waiting_now) {
-            Some(every) => last_look.elapsed() >= every,
-            None => false,
-        };
+        let every = watch_interval(visible, FOCUSED.load(Ordering::Relaxed), waiting_now);
+        let due = last_look.elapsed() >= every;
         if !(due || (visible && CHECK_NOW.swap(false, Ordering::Relaxed))) {
             continue;
         }
         last_look = Instant::now();
-        let Ok(c) = ctx(&p) else { continue };
-        let steam = live::steam_state(&c.proc_root);
-        if last_steam.is_some_and(|s| s != SteamState::Closed)
-            && steam == SteamState::Closed
-            && waiting_now
-        {
-            let bin = library::installed_cli(&p);
-            match live::run_queue(&c, bin.as_deref()) {
-                Ok(lines) => pending_ran.extend(lines),
-                Err(e) => pending_ran.push(format!("{e:#}")),
+        let c = ctx(&p);
+        let steam = c
+            .as_ref()
+            .map(|c| live::steam_state(&c.proc_root))
+            .unwrap_or(SteamState::Closed);
+        if let Ok(c) = &c {
+            if last_steam.is_some_and(|s| s != SteamState::Closed)
+                && steam == SteamState::Closed
+                && waiting_now
+            {
+                let bin = library::installed_cli(&p);
+                match live::run_queue(c, bin.as_deref()) {
+                    Ok(lines) => pending_ran.extend(lines),
+                    Err(e) => pending_ran.push(format!("{e:#}")),
+                }
             }
         }
         last_steam = Some(steam);
+        let token = c.as_ref().map(live::token).unwrap_or_default();
+
+        // Tray icon, or a desktop notification when the tray is off.
+        let tray_on = update::Settings::load_read_only(&p).tray;
+        let key = (
+            token.clone(),
+            steam,
+            tray::UPDATE_READY.load(Ordering::Relaxed),
+            c.is_ok(),
+        );
+        if status_key.as_ref() != Some(&key) {
+            status_key = Some(key);
+            let status = tray::compute(&p, c.as_ref().map_err(Clone::clone));
+            let became_problem = status.state == tray::State::Problem
+                && last_status
+                    .as_ref()
+                    .is_some_and(|s| s.state != tray::State::Problem);
+            if tray_on {
+                tray::update(&app, &status);
+            } else if became_problem && !(visible && FOCUSED.load(Ordering::Relaxed)) {
+                tray::notify(
+                    "A game crashed",
+                    &format!(
+                        "{}. Open CachyPlay to see why and what to try.",
+                        status.tooltip.trim_start_matches("CachyPlay: ")
+                    ),
+                );
+            }
+            last_status = Some(status);
+        }
+
         if !visible {
             continue; // nothing is redrawn while hidden; the window catches up when shown
         }
+        let Ok(_) = &c else { continue };
         let now = Live {
             steam,
-            token: live::token(&c),
+            token,
             waiting: live::queue(&p),
             ran: std::mem::take(&mut pending_ran),
         };
@@ -1135,6 +1255,14 @@ fn main() {
         std::process::exit(code);
     }
     if let Ok(p) = Paths::from_env() {
+        // Before anything writes to the settings folder: a new install has none yet.
+        let new = !p.config.join("settings.json").exists() && !p.config.join("version").exists();
+        NEW_INSTALL.store(new, Ordering::Relaxed);
+        let before = std::fs::read_to_string(p.config.join("version")).unwrap_or_default();
+        let before = before.trim();
+        let _ = UPDATED_FROM.set(
+            (!before.is_empty() && before != cachyplay_core::VERSION).then(|| before.to_string()),
+        );
         cachyplay_core::crash::install_panic_hook(&p, "cachyplay-gui");
         let previous = cachyplay_core::crash::check(&p, std::path::Path::new("/proc"));
         if let Ok(mut c) = LAST_CRASH.lock() {
@@ -1146,11 +1274,7 @@ fn main() {
     let app = tauri::Builder::default()
         // Must be first: a second launch hands over to this window and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            tray::show_window(app);
         }))
         .register_asynchronous_uri_scheme_protocol("cover", |_ctx, request, responder| {
             let path = request.uri().path().to_string();
@@ -1162,6 +1286,13 @@ fn main() {
                 cachyplay_core::crash::claim(&p, std::path::Path::new("/proc"));
             }
             close_on_signals(app.handle().clone());
+            if let Ok(p) = paths() {
+                if update::Settings::load_read_only(&p).tray {
+                    if let Err(e) = tray::apply(app.handle(), true) {
+                        cachyplay_core::logging::write(&p, &format!("tray: {e}"));
+                    }
+                }
+            }
             let handle = app.handle().clone();
             std::thread::Builder::new()
                 .name("watcher".into())
@@ -1177,6 +1308,12 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            report_header,
+            report_folders,
+            whats_new,
+            app_info,
+            skip_version,
+            quit_app,
             set_visible,
             last_crash,
             dismiss_crash,
@@ -1227,7 +1364,6 @@ fn main() {
             protondb_rating,
             app_settings,
             set_app_setting,
-            desktop_accent,
             desktop_theme,
             open_url,
             apply_fix,
@@ -1251,24 +1387,134 @@ mod tests {
     use super::*;
 
     #[test]
-    fn watcher_rests_while_hidden_and_slows_when_unfocused() {
-        assert_eq!(
-            watch_interval(true, true, false),
-            Some(Duration::from_secs(3))
-        );
-        assert_eq!(
-            watch_interval(true, false, false),
-            Some(Duration::from_secs(10))
-        );
-        assert_eq!(
-            watch_interval(false, false, false),
-            None,
-            "hidden: nothing runs"
-        );
-        assert!(
-            watch_interval(false, false, true).is_some(),
-            "still runs waiting changes when Steam closes"
-        );
+    fn watcher_slows_down_when_unfocused_or_hidden() {
+        assert_eq!(watch_interval(true, true, false), Duration::from_secs(3));
+        assert_eq!(watch_interval(true, false, false), Duration::from_secs(10));
+        // Hidden: no window updates, only a light look for the tray or notifications.
+        assert_eq!(watch_interval(false, false, false), Duration::from_secs(10));
+        // Changes waiting for Steam to close still run promptly.
+        assert_eq!(watch_interval(false, false, true), Duration::from_secs(5));
+    }
+
+    /// Every text colour must reach 4.5:1 on every background it can sit on, in both themes
+    /// (House Standard). Colours come from ui/tokens.css, the only place they're defined.
+    #[test]
+    fn contrast_of_every_text_colour() {
+        let css = include_str!("../ui/tokens.css");
+        let block = |start: &str| -> std::collections::HashMap<String, String> {
+            let from = css.find(start).expect(start) + start.len();
+            let body = &css[from..from + css[from..].find('}').unwrap()];
+            body.lines()
+                .filter_map(|l| {
+                    let (k, v) = l.trim().split_once(':')?;
+                    let v = v.trim().trim_end_matches(';').trim();
+                    (k.starts_with("--") && v.starts_with('#'))
+                        .then(|| (k.trim().to_string(), v[..7].to_string()))
+                })
+                .collect()
+        };
+        let lum = |hex: &str| {
+            let c: Vec<f64> = (0..3)
+                .map(|i| u8::from_str_radix(&hex[1 + 2 * i..3 + 2 * i], 16).unwrap() as f64 / 255.0)
+                .map(|v| {
+                    if v <= 0.03928 {
+                        v / 12.92
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                })
+                .collect();
+            0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+        };
+        let ratio = |a: &str, b: &str| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        let dark = block(":root {");
+        let mut light = dark.clone();
+        light.extend(block(":root[data-theme=\"light\"] {"));
+        let texts = [
+            "--text",
+            "--muted",
+            "--accent-default",
+            "--success",
+            "--warning",
+            "--error",
+        ];
+        let backgrounds = ["--bg", "--sidebar", "--card", "--control", "--hover"];
+        let mut failures = Vec::new();
+        for (theme, t) in [("dark", &dark), ("light", &light)] {
+            for fg in texts {
+                for bg in backgrounds {
+                    let r = ratio(&t[fg], &t[bg]);
+                    if r < 4.5 {
+                        failures.push(format!("{theme}: {fg} on {bg} is {r:.2}:1"));
+                    }
+                }
+            }
+            // Filled accent buttons: dark ink in the dark theme, white in the light theme.
+            let r = ratio(&t["--accent-ink-default"], &t["--accent-default"]);
+            if r < 4.5 {
+                failures.push(format!("{theme}: text on the accent is {r:.2}:1"));
+            }
+            let want_ink = if theme == "dark" {
+                "#0C1016"
+            } else {
+                "#FFFFFF"
+            };
+            if t["--accent-ink-default"] != want_ink {
+                failures.push(format!("{theme}: accent buttons must use {want_ink} ink"));
+            }
+            // The red Uninstall button: background-coloured text on the error colour.
+            let r = ratio(&t["--bg"], &t["--error"]);
+            if r < 4.5 {
+                failures.push(format!("{theme}: text on the error colour is {r:.2}:1"));
+            }
+        }
+        assert!(failures.is_empty(), "below 4.5:1:\n{}", failures.join("\n"));
+    }
+
+    /// No colour is written anywhere but tokens.css.
+    #[test]
+    fn colours_live_only_in_the_tokens_file() {
+        let hex = regex_lite_hex();
+        for (name, text) in [
+            ("style.css", include_str!("../ui/style.css")),
+            ("app.js", include_str!("../ui/app.js")),
+            ("index.html", include_str!("../ui/index.html")),
+        ] {
+            let found: Vec<&str> = text
+                .lines()
+                .filter(|l| !l.contains("#FFFFFF\"]") && hex(l))
+                .collect();
+            assert!(
+                found.is_empty(),
+                "{name} has colours outside tokens.css: {found:?}"
+            );
+        }
+    }
+
+    /// A line with a #rgb/#rrggbb colour or rgb()/rgba() in it (ids like href="#x" don't count).
+    fn regex_lite_hex() -> impl Fn(&str) -> bool {
+        |l: &str| {
+            if l.contains("rgb(") || l.contains("rgba(") {
+                return true;
+            }
+            let b = l.as_bytes();
+            (0..b.len()).any(|i| {
+                b[i] == b'#' && {
+                    let run = b[i + 1..]
+                        .iter()
+                        .take_while(|c| c.is_ascii_hexdigit())
+                        .count();
+                    let next = b.get(i + 1 + run).copied().unwrap_or(b' ');
+                    matches!(run, 3 | 6 | 8)
+                        && !next.is_ascii_alphanumeric()
+                        && next != b'-'
+                        && b[i + 1..i + 1 + run].iter().any(|c| c.is_ascii_digit())
+                }
+            })
+        }
     }
 
     #[test]

@@ -125,6 +125,9 @@ enum Cmd {
         /// Write each game's working settings into Steam so they keep working without CachyPlay
         #[arg(long)]
         keep_settings: bool,
+        /// Also delete CachyPlay's settings, logs, and each game's fixes and history
+        #[arg(long)]
+        delete_settings: bool,
         /// Don't ask for confirmation
         #[arg(long, short)]
         yes: bool,
@@ -579,6 +582,7 @@ fn real_main(args: Vec<OsString>) -> Result<ExitCode> {
         Cmd::Uninstall {
             remove_backups,
             keep_settings,
+            delete_settings,
             yes,
         } => {
             println!("This will:");
@@ -595,7 +599,11 @@ fn real_main(args: Vec<OsString>) -> Result<ExitCode> {
                     ""
                 }
             );
-            println!("  2. Remove CachyPlay's cache, logs, fix files and records");
+            if delete_settings {
+                println!("  2. Remove CachyPlay, and its settings, logs, fix files and records");
+            } else {
+                println!("  2. Remove CachyPlay (its settings and logs stay; add --delete-settings to remove them)");
+            }
             println!(
                 "  3. {} save and config backups",
                 if remove_backups { "DELETE" } else { "Keep" }
@@ -622,7 +630,7 @@ fn real_main(args: Vec<OsString>) -> Result<ExitCode> {
                 .ok()
                 .and_then(|c| cachyplay_core::compat::kept_copies_note(&c));
             restore_all_with(&paths, false, keep_settings)?;
-            let removed = install::remove_user_files(&paths, remove_backups)?;
+            let removed = install::remove_user_files(&paths, remove_backups, delete_settings)?;
             if let Some(n) = kept_note {
                 println!("{n}");
             }

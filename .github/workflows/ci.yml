@@ -25,7 +25,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install check tools (shellcheck 0.11.0, cargo-audit)
         run: |
-          pip install --user shellcheck-py==0.11.0.1
+          pipx install shellcheck-py==0.11.0.1
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           cargo install cargo-audit --locked --quiet
       # Everything is checked by one script, the same one used before every release, so the checks

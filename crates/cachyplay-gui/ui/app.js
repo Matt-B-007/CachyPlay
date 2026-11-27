@@ -41,7 +41,7 @@ const $ = (id) => document.getElementById(id);
 /* ---------- toasts ---------- */
 function toast(message, kind = "info", action) {
   // When CachyPlay itself fails, offer the one useful next step.
-  if (kind === "error" && !action) action = { label: "Save bug report", run: () => saveReport(null) };
+  if (kind === "error" && !action) action = { label: "Report", run: () => openReport({ appId: state.selected, problem: message }) };
   const t = h("div", { class: `toast ${kind}` }, h("p", {}, message));
   if (action) t.append(h("button", { class: "secondary", onclick: action.run }, action.label));
   $("toasts").append(t);
@@ -145,7 +145,7 @@ function banners() {
     out.push(h("div", { class: "banner warn" },
       h("p", {}, h("strong", {}, "CachyPlay closed unexpectedly last time"),
         state.lastCrash.details ? "A crash report was saved. Sending it helps fix the problem." : "It may have been closed by the system or a power cut. A bug report helps if it keeps happening."),
-      h("button", { class: "secondary", onclick: () => { dismissCrash(); saveReport(null); } }, "Report"),
+      h("button", { class: "secondary", onclick: () => { const c = state.lastCrash; dismissCrash(); openReport({ problem: "CachyPlay closed unexpectedly." + (c && c.details ? "" : " (No crash trace: it may have been closed by the system.)") }); } }, "Report"),
       h("button", { class: "secondary", onclick: dismissCrash }, "Dismiss")));
   }
   const sc = o.system_crashes;
@@ -154,6 +154,11 @@ function banners() {
       h("p", {},
         h("strong", {}, `${sc.crashes} graphics driver crashes in ${sc.programs.length} different games`),
         `${sc.programs.join(", ")}. When several games crash the same way, the cause is usually the driver or an add-on every game loads, not the games.`)));
+  }
+  // Every banner leads with its status icon, so an amber warning never reads as the accent.
+  for (const b of out) {
+    const kind = b.classList.contains("info") ? "info" : b.classList.contains("bad") ? "octagon" : "alert";
+    b.prepend(icon(kind, 18));
   }
   return out;
 }
@@ -333,7 +338,7 @@ function hero(d) {
       ...lines,
       h("div", { class: "hero-actions" },
         primary,
-        h("button", { class: primary ? "secondary big" : "primary big", onclick: () => saveReport(s.app_id) }, "Save bug report"),
+        h("button", { class: primary ? "secondary big" : "primary big", onclick: () => openReport({ appId: s.app_id }), title: "Save a bug report for this game" }, "Report a problem"),
         sum && sum.fix_id ? h("span", { class: "fix-caption" }, `Fix it tries: ${sum.fix_label}. You can undo it.`) : null)),
     h("div", { class: "switch-card" },
       h("span", { class: "switch-label" }, h("strong", {}, "CachyPlay"), h("span", {}, switchNote)),
@@ -640,9 +645,13 @@ function findCauseCard(fc) {
     h("p", { class: "muted" }, "One change per start. Each result is recorded, and anything that crashes anyway is crossed off, including things you try in Steam's launch options."));
 }
 
+/* Resets offer Undo straight away in their message (House Standard). */
+const UNDO_OF = { reset_shader_cache: "undo_shader_cache" };
+
 async function simpleAction(cmd, appId) {
   try {
-    toast(await invoke(cmd, { appId }), "success");
+    const undo = UNDO_OF[cmd];
+    toast(await invoke(cmd, { appId }), "success", undo ? { label: "Undo", run: () => simpleAction(undo, appId) } : undefined);
   } catch (e) {
     toast(String(e), "error");
   }
@@ -841,8 +850,8 @@ function historyTab(d) {
       h("p", { class: "muted" }, "The same driver error keeps happening. Run sudo nvidia-bug-report.sh in a terminal, then post this on NVIDIA's Linux forum with nvidia-bug-report.log.gz and a CachyPlay bug report attached."),
       h("pre", { class: "dev-text" }, ins.nvidia_report),
       h("div", { class: "actions" },
-        h("button", { class: "primary", onclick: () => copyText(ins.nvidia_report, "Copied. Paste it into your post.") }, "Copy text"),
-        h("button", { class: "secondary", onclick: () => openUrl("https://forums.developer.nvidia.com/c/gpu-graphics/linux/148") }, "Open NVIDIA's Linux forum"))));
+        h("button", { class: "primary", onclick: () => openReport({ appId: d.summary.app_id, destination: "nvidia", description: ins.nvidia_report, summary: `${d.summary.name}: driver error (Xid) keeps happening` }) }, "Tell NVIDIA…"),
+        h("button", { class: "secondary", onclick: () => copyText(ins.nvidia_report, "Copied. Paste it into your post.") }, "Copy text"))));
   }
   if (ins && ins.developer_report) {
     out.push(card("dev",
@@ -850,9 +859,8 @@ function historyTab(d) {
       h("p", { class: "muted" }, "Developers fix what they can see. Copy this, post it in the game's Steam discussions (or the developer's Discord), and attach a bug report."),
       h("pre", { class: "dev-text" }, ins.developer_report),
       h("div", { class: "actions" },
-        h("button", { class: "primary", onclick: () => copyText(ins.developer_report, "Copied. Paste it into your post.") }, "Copy text"),
-        h("button", { class: "secondary", onclick: () => openUrl(ins.discussions_url) }, "Open Steam discussions"),
-        h("button", { class: "secondary", onclick: () => saveReport(d.summary.app_id) }, "Save bug report"))));
+        h("button", { class: "primary", onclick: () => openReport({ appId: d.summary.app_id, destination: "steam", description: ins.developer_report, discussions: ins.discussions_url, summary: `${d.summary.name} problem on Linux (Proton)` }) }, "Tell the developer…"),
+        h("button", { class: "secondary", onclick: () => copyText(ins.developer_report, "Copied. Paste it into your post.") }, "Copy text"))));
   }
   return out;
 }
@@ -960,6 +968,8 @@ async function prefixAction(cmd, appId, name, size) {
   try {
     if (cmd === "reset_prefix" && canQueueNow()) {
       toast(await invoke("queue_action", { action: { action: "reset_prefix", app_id: appId } }), "success", { label: "Close Steam for me", run: closeSteam });
+    } else if (cmd === "reset_prefix") {
+      toast(await invoke(cmd, { appId }), "success", { label: "Undo", run: () => prefixAction("undo_prefix_reset", appId, name) });
     } else {
       toast(await invoke(cmd, { appId }), "success");
     }
@@ -990,7 +1000,8 @@ async function setEnabled(appId, on) {
       toast(await invoke("queue_action", { action: { action: on ? "enable" : "disable", app_id: appId } }), "success", { label: "Close Steam for me", run: closeSteam });
       return;
     }
-    toast(await invoke("set_enabled", { appId, enabled: on }), "success");
+    toast(await invoke("set_enabled", { appId, enabled: on }), "success",
+      on ? undefined : { label: "Undo", run: () => setEnabled(appId, true) });
   } catch (e) {
     toast(String(e), "error");
   } finally {
@@ -1120,20 +1131,115 @@ function redrawBanners() {
   else renderEmptyMain();
 }
 
-async function saveReport(appId) {
+/* ---------- Report a problem (House Standard dialog) ----------
+   Main buttons: Save to file, Copy report, Open log folder. Secondary: where to send it (GitHub,
+   NVIDIA's forum, the game's Steam discussions). Nothing is sent by CachyPlay itself. */
+state.report = null;
+
+function saveReport(appId) {
+  openReport({ appId });
+}
+
+async function openReport(opts = {}) {
+  closeMenus();
+  const appId = opts.appId || null;
+  const game = appId && state.overview ? state.overview.games.find((g) => g.app_id === appId) : null;
+  state.report = { ...opts, appId, game, saved: null };
+  $("report-for").textContent = game
+    ? `For ${game.name}: the report includes its logs, crashes and what was tried.`
+    : "A general report about CachyPlay and this PC. For a problem with one game, open that game first.";
+  $("report-summary").value = opts.summary || "";
+  $("report-description").value = opts.description || (opts.problem ? `${opts.problem}\n\nWhat I expected: ` : "");
+  let header = "";
+  try {
+    header = await invoke("report_header");
+  } catch {
+    header = "";
+  }
+  state.report.header = header;
+  $("report-preview").textContent = `${header}\nAlso included: ${game ? "this game's crashes, starts, fixes and logs (Proton, Steam), " : ""}system details (graphics card, driver, kernel), CachyPlay's log and settings, and recent driver messages.`;
+  renderDestinations();
+  $("report-dialog").showModal();
+  $("report-summary").focus();
+}
+
+function renderDestinations() {
+  const r = state.report;
+  const info = state.appInfo || {};
+  const out = [h("p", { class: "muted" }, "Send it somewhere (opens in your browser; attach the saved file there):")];
+  const row = h("div", { class: "row-actions" });
+  row.append(h("button", { type: "button", class: "secondary", onclick: () => sendTo("github") }, icon("external"), " Open on GitHub"));
+  if (r.destination === "nvidia" || (insightsFor(r.appId) || {}).nvidia_report) {
+    row.append(h("button", { type: "button", class: r.destination === "nvidia" ? "primary" : "secondary", onclick: () => sendTo("nvidia") }, icon("external"), " NVIDIA forum"));
+  }
+  if (r.destination === "steam" || r.discussions) {
+    row.append(h("button", { type: "button", class: r.destination === "steam" ? "primary" : "secondary", onclick: () => sendTo("steam") }, icon("external"), " Steam discussions"));
+  }
+  out.push(row);
+  out.push(h("p", { class: "hint-small" }, info.repo_private
+    ? "GitHub: only the owner can see this repository while it's private."
+    : "GitHub: this creates a PUBLIC issue that anyone can read."));
+  $("report-destinations").replaceChildren(...out);
+}
+
+/* Save once per dialog; the other buttons reuse the saved file. */
+async function ensureSaved() {
+  const r = state.report;
+  if (r.saved) return r.saved;
   const progress = toast("Saving bug report…");
   try {
-    const r = await invoke("create_report", { appId: appId || null });
-    toast(`Saved ${r.name}`, "success", { label: "Show in folder", run: () => invoke("open_folder", { path: r.folder }) });
+    r.saved = await invoke("create_report", { appId: r.appId, summary: $("report-summary").value, description: $("report-description").value });
+    return r.saved;
   } catch (e) {
-    toast(`Couldn't save the bug report: ${e}`, "error");
+    toast(`Couldn't save the bug report: ${e}`, "error", { label: "Try again", run: ensureSaved });
+    return null;
   } finally {
     progress.remove();
   }
-  if ($("reports").open) renderReports();
 }
 
-/* ---------- bug reports screen ---------- */
+async function reportSave() {
+  const saved = await ensureSaved();
+  if (!saved) return;
+  toast(`Saved ${saved.name}`, "success", { label: "Show in folder", run: () => invoke("open_folder", { path: saved.folder }) });
+  renderReports();
+}
+
+async function reportCopy() {
+  const saved = await ensureSaved();
+  if (!saved) return;
+  await copyText(saved.text, `Copied. The full report (with logs) is ${saved.name}.`);
+  renderReports();
+}
+
+async function reportLogs() {
+  try {
+    const f = await invoke("report_folders");
+    await invoke("open_folder", { path: f.logs });
+  } catch (e) {
+    toast(String(e), "error", { label: "OK", run: () => {} });
+  }
+}
+
+async function sendTo(where) {
+  const saved = await ensureSaved();
+  if (!saved) return;
+  const r = state.report;
+  const summary = $("report-summary").value.trim() || (r.game ? `Problem with ${r.game.name}` : "Problem with CachyPlay");
+  const said = $("report-description").value.trim();
+  if (where === "github") {
+    const body = `${said || "(describe what happened)"}\n\n${r.header.trim()}\n\nPlease attach the saved report: ${saved.name} (in ${saved.folder}).`;
+    const repo = (state.appInfo && state.appInfo.repo) || "Matt-B-007/CachyPlay";
+    await openUrl(`https://github.com/${repo}/issues/new?title=${encodeURIComponent(summary)}&body=${encodeURIComponent(body)}`);
+  } else {
+    await copyText(`${summary}\n\n${said}`, `Copied. Paste it into your post and attach ${saved.name}.`);
+    await openUrl(where === "nvidia" ? "https://forums.developer.nvidia.com/c/gpu-graphics/linux/148" : r.discussions);
+  }
+  toast(`Attach ${saved.name} to your post.`, "info", { label: "Show in folder", run: () => invoke("open_folder", { path: saved.folder }) });
+  renderReports();
+}
+
+/* Saved bug reports, listed in Settings › Privacy. */
 async function renderReports() {
   const list = $("report-list");
   let reports = [];
@@ -1144,7 +1250,7 @@ async function renderReports() {
     return;
   }
   if (!reports.length) {
-    list.replaceChildren(h("li", { class: "empty-row" }, "No bug reports saved yet. They're saved to your Desktop."));
+    list.replaceChildren(h("li", { class: "empty-row" }, "No bug reports saved yet. Help › Report a problem saves one to your Desktop."));
     return;
   }
   list.replaceChildren(...reports.map((r) => h("li", {},
@@ -1152,11 +1258,6 @@ async function renderReports() {
       h("strong", {}, r.game || (r.app_id ? `Game ${r.app_id}` : "General report")),
       h("span", {}, `Saved ${when(r.created.replace(" ", "T"))}, ${r.size_kb} KB`)),
     h("button", { type: "button", class: "secondary", onclick: () => invoke("open_folder", { path: r.path }) }, "Show in folder"))));
-}
-
-function openReports() {
-  renderReports();
-  $("reports").showModal();
 }
 
 /* ---------- updates ---------- */
@@ -1184,6 +1285,7 @@ function renderUpdate() {
   if (!u) return;
   for (const r of document.querySelectorAll('input[name="channel"]')) r.checked = r.value === u.channel;
   $("roll-back").hidden = !u.can_roll_back;
+  $("last-checked").textContent = u.last_checked ? `Last checked ${when(u.last_checked)}.` : "Not checked yet.";
   btn.hidden = true;
   if (u.error) {
     pill.hidden = true;
@@ -1215,7 +1317,18 @@ function renderUpdate() {
     line.textContent = `You're on beta v${u.current}, which is newer than the newest Stable version (${u.stable_now.tag}). You'll get Stable updates from the next one on, or switch now.`;
     btn.hidden = false;
     btn.textContent = `Switch to Stable now (${u.stable_now.tag})`;
-    btn.onclick = switchToStableNow;
+    btn.onclick = () => openUpdateDialog({ toStable: true });
+  } else if (u.skipped && u.latest) {
+    pill.hidden = true;
+    line.className = "status-line";
+    line.textContent = `You chose to skip ${u.latest.tag}. You have v${u.current}; the next version will be offered.`;
+    btn.hidden = false;
+    btn.textContent = `Install ${u.latest.tag} anyway`;
+    btn.onclick = async () => {
+      await invoke("skip_version", { tag: null }).catch(() => {});
+      await checkUpdates(false);
+      openUpdateDialog();
+    };
   } else if (u.no_releases) {
     pill.hidden = true;
     line.className = "status-line";
@@ -1227,49 +1340,58 @@ function renderUpdate() {
   }
 }
 
-async function switchToStableNow() {
-  const btn = $("update-now-settings");
-  btn.disabled = true;
-  btn.textContent = "Installing…";
-  try {
-    const msg = await invoke("install_update", { toStable: true });
-    toast(msg, "success");
-    await invoke("restart_app");
-  } catch (e) {
-    toast(String(e), "error");
-  } finally {
-    btn.disabled = false;
-    renderUpdate();
-  }
-}
-
-function openUpdateDialog() {
+/* The House Standard update dialog: "CachyPlay X is available" (+ Beta tag), "You have X",
+   release notes, Update now · Later · Skip this version; then progress and Restart. */
+function openUpdateDialog(opts = {}) {
   const u = state.update;
-  if (!u || !u.latest || !u.available) return;
-  $("update-title").textContent = `CachyPlay ${u.latest.tag} is available`;
-  $("update-notes").replaceChildren(...notesView(u.latest.notes || ""));
-  const btn = $("update-now");
-  btn.disabled = false;
-  btn.textContent = "Update now";
-  btn.onclick = updateNow;
+  const rel = opts.toStable ? u && u.stable_now : u && u.latest;
+  if (!rel || (!opts.toStable && !u.available)) return;
+  state.updateTarget = { rel, toStable: !!opts.toStable };
+  $("update-title").textContent = `CachyPlay ${rel.tag.replace(/^v/, "")} is available`;
+  $("update-beta").hidden = !rel.prerelease;
+  $("update-sub").textContent = `You have ${u.current}.`;
+  const stableNote = $("update-stable-note");
+  stableNote.hidden = !opts.toStable;
+  stableNote.textContent = opts.toStable ? `You're on beta ${u.current}. This installs the newest normal version.` : "";
+  $("update-notes").replaceChildren(...notesView(rel.notes || ""));
+  $("update-progress").hidden = true;
   $("update-command").hidden = true;
-  btn.hidden = false;
+  const now = $("update-now");
+  now.hidden = false;
+  now.disabled = false;
+  now.textContent = "Update now";
+  now.onclick = updateNow;
+  $("update-later").hidden = false;
+  $("update-later").textContent = "Later";
+  $("update-skip").hidden = !!opts.toStable;
   if (u.kind === "package") {
-    $("update-sub").textContent = `You have v${u.current}. CachyPlay was installed from the AUR, so update it with your package manager:`;
+    $("update-sub").textContent = `You have ${u.current}. CachyPlay was installed from the AUR, so your package manager updates it:`;
     $("update-command").hidden = false;
     $("update-command-text").value = u.command;
-    btn.hidden = true;
+    now.hidden = true;
   } else if (u.kind === "notinstalled") {
-    $("update-sub").textContent = `You have v${u.current}, running from a download or build folder. Install CachyPlay first, then update.`;
-    btn.textContent = "Install CachyPlay";
-    btn.onclick = async () => {
+    $("update-sub").textContent = `You have ${u.current}, running from a download or build folder. Install CachyPlay first, then update.`;
+    now.textContent = "Install CachyPlay";
+    now.onclick = async () => {
       $("update-dialog").close();
       await installSelf();
     };
-  } else {
-    $("update-sub").textContent = `You have v${u.current}. The download is checked before it's installed, and your current version is kept so you can go back.`;
   }
   $("update-dialog").showModal();
+}
+
+async function skipThisVersion() {
+  const t = state.updateTarget;
+  if (!t) return;
+  try {
+    await invoke("skip_version", { tag: t.rel.tag });
+    toast(`${t.rel.tag} won't be offered again. You'll hear about the next version.`, "success", {
+      label: "Undo", run: async () => { await invoke("skip_version", { tag: null }); checkUpdates(true); } });
+  } catch (e) {
+    toast(String(e), "error");
+  }
+  $("update-dialog").close();
+  checkUpdates(true);
 }
 
 /* Release notes are markdown from GitHub; show headings and bullets, everything as text. */
@@ -1293,24 +1415,32 @@ function notesView(md) {
 }
 
 async function updateNow() {
-  const btn = $("update-now");
-  btn.disabled = true;
-  btn.textContent = "Updating…";
+  const t = state.updateTarget;
+  const now = $("update-now");
+  now.disabled = true;
+  $("update-skip").hidden = true;
+  $("update-later").hidden = true;
+  $("update-progress").hidden = false;
+  $("update-progress").classList.remove("done");
+  $("update-progress-text").textContent = "Downloading the update and checking its signature…";
   try {
-    const msg = await invoke("install_update");
-    toast(msg, "success");
-    $("update-title").textContent = `Updated to ${state.update.latest.tag}`;
-    $("update-sub").textContent = "Restart CachyPlay to start using the new version.";
+    await invoke("install_update", { toStable: t && t.toStable });
+    $("update-progress").classList.add("done");
+    $("update-progress-text").textContent = "Update installed. Restart to use it.";
     state.update.available = false;
     state.update.can_roll_back = true;
     renderUpdate();
-    btn.disabled = false;
-    btn.textContent = "Restart CachyPlay";
-    btn.onclick = () => invoke("restart_app");
+    now.disabled = false;
+    now.textContent = "Restart";
+    now.onclick = () => invoke("restart_app");
+    $("update-later").hidden = false;
+    $("update-later").textContent = "Restart later";
   } catch (e) {
-    toast(`Update failed: ${e}`, "error");
-    btn.disabled = false;
-    btn.textContent = "Try again";
+    $("update-progress").hidden = true;
+    $("update-later").hidden = false;
+    now.disabled = false;
+    now.textContent = "Try again";
+    toast(`The update wasn't installed: ${e} You still have ${state.update.current}.`, "error");
   }
 }
 
@@ -1442,8 +1572,10 @@ function confirmDialog(title, text, okLabel) {
   });
 }
 
-function openSettings() {
+function openSettings(section) {
+  closeMenus();
   const o = state.overview;
+  if (!o) return;
   const facts = $("settings-facts");
   facts.replaceChildren(
     h("dt", {}, "Version"), h("dd", {}, o.version),
@@ -1456,6 +1588,7 @@ function openSettings() {
   $("restore-all").title = blocked || "";
   $("uninstall").title = blocked || "";
   renderUpdate();
+  renderReports();
   if (!state.update) checkUpdates(false);
   renderKept();
   renderObsSettings();
@@ -1464,6 +1597,7 @@ function openSettings() {
   $("games-view").hidden = true;
   $("settings").hidden = false;
   $("settings-content").scrollTop = 0;
+  if (section && $(section)) $(section).scrollIntoView({ block: "start" });
   $("close-settings").focus();
 }
 
@@ -1526,6 +1660,8 @@ function renderAppSettings() {
   for (const r of document.querySelectorAll('input[name="theme"]')) r.checked = r.value === (st.theme || "system");
   $("big-screen").checked = !!st.big_screen;
   $("protondb").checked = !!st.protondb;
+  $("daily-check").checked = st.daily_check !== false;
+  $("tray").checked = !!st.tray;
 }
 
 async function setAppSetting(key, value) {
@@ -1533,8 +1669,9 @@ async function setAppSetting(key, value) {
     await invoke("set_app_setting", { key, value });
     state.settings[key] = value;
   } catch (e) {
-    toast(String(e), "error");
+    toast(String(e), "error", { label: "OK", run: () => {} });
   }
+  renderAppSettings();
   applyDisplay();
   if (key === "protondb" && value && state.selected) showGame(state.selected, { keepScroll: true });
 }
@@ -1557,16 +1694,7 @@ async function applyDisplay() {
   }
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   document.body.classList.toggle("big-screen", !!st.big_screen);
-  let accent = null;
-  if (theme === "system") {
-    try {
-      accent = await invoke("desktop_accent");
-    } catch {
-      accent = null;
-    }
-  }
-  if (accent) document.documentElement.style.setProperty("--accent", accent);
-  else document.documentElement.style.removeProperty("--accent");
+  // CachyPlay always uses its own accent (aerospace orange), like every app in the family.
   if (st.big_screen) startGamepad();
 }
 
@@ -1730,25 +1858,6 @@ async function restoreAll() {
   load();
 }
 
-async function uninstall() {
-  const keep = $("keep-backups").checked;
-  const keepSettings = $("keep-settings").checked;
-  const first = keepSettings
-    ? "Each game's working settings are written into its Steam launch options, so it keeps running the same way, and a copy is saved to your Desktop."
-    : "Every game's original launch options are put back.";
-  const ok = await confirmDialog("Uninstall CachyPlay?",
-    `${first} ${keep ? "Backups are kept." : "Backups are deleted too."} Bug reports on your Desktop stay.`,
-    "Uninstall CachyPlay");
-  if (!ok) return;
-  try {
-    const msg = await invoke("uninstall", { removeBackups: !keep, keepSettings });
-    closeSettings();
-    toast(msg, "success");
-  } catch (e) {
-    toast(String(e), "error");
-  }
-  load();
-}
 /* ---------- keyboard: up/down moves through the game list ---------- */
 function railKeys(e) {
   if (!["ArrowUp", "ArrowDown"].includes(e.key)) return;
@@ -1763,12 +1872,343 @@ function railKeys(e) {
   }
 }
 
+/* ---------- icons (Lucide, from the sprite in index.html) ---------- */
+function icon(name, size = 16) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "icon");
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS(ns, "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+/* ---------- Help menu ---------- */
+function closeMenus() {
+  $("help-menu").hidden = true;
+  $("open-help").setAttribute("aria-expanded", "false");
+}
+
+function toggleHelp() {
+  const m = $("help-menu");
+  const open = m.hidden;
+  closeMenus();
+  if (open) {
+    m.hidden = false;
+    $("open-help").setAttribute("aria-expanded", "true");
+    m.querySelector("button").focus();
+  }
+}
+
+function helpAction(what) {
+  closeMenus();
+  if (what === "report") openReport({ appId: state.selected });
+  else if (what === "whatsnew") openWhatsNew();
+  else if (what === "shortcuts") openShortcuts();
+  else if (what === "tour") startTour();
+  else if (what === "about") openAbout();
+}
+
+/* ---------- keyboard shortcuts ---------- */
+const SHORTCUTS = [
+  ["Ctrl+K", "Search games, fixes, settings and actions"],
+  ["Ctrl+,", "Settings"],
+  ["?", "This list of shortcuts"],
+  ["F1", "Help menu"],
+  ["/", "Search games"],
+  ["↑ ↓", "Move through the game list"],
+  ["Esc", "Close a dialog, or go back from Settings"],
+  ["Ctrl+Q", "Quit CachyPlay"],
+];
+
+function openShortcuts() {
+  $("shortcut-list").replaceChildren(...SHORTCUTS.flatMap(([k, what]) => [
+    h("dt", {}, ...k.split("+").map((p, i) => [i ? "+" : null, h("kbd", {}, p)]).flat()),
+    h("dd", {}, what)]));
+  $("shortcuts-dialog").showModal();
+}
+
+function typingIn(el) {
+  return el && (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable);
+}
+
+function onKey(e) {
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); return; }
+  if (ctrl && e.key === ",") { e.preventDefault(); openSettings(); return; }
+  if (ctrl && e.key.toLowerCase() === "q") { e.preventDefault(); invoke("quit_app"); return; }
+  if (e.key === "F1") { e.preventDefault(); toggleHelp(); return; }
+  if (e.key === "Escape") {
+    if (!$("help-menu").hidden) { closeMenus(); $("open-help").focus(); return; }
+    if (!$("tour").hidden) { endTour(); return; }
+    if (!$("settings").hidden && !document.querySelector("dialog[open]")) closeSettings();
+    return;
+  }
+  if (typingIn(document.activeElement) || ctrl || e.altKey || document.querySelector("dialog[open]")) return;
+  if (e.key === "?") { e.preventDefault(); openShortcuts(); return; }
+  if (e.key === "/") { e.preventDefault(); closeSettings(); $("search").focus(); }
+}
+
+/* ---------- Ctrl+K: search everything ---------- */
+const SETTING_SECTIONS = [
+  ["set-general", "General", "tray icon notifications"],
+  ["set-appearance", "Appearance", "theme dark light big screen controller tv"],
+  ["set-updates", "Updates", "stable beta channel check version go back"],
+  ["set-privacy", "Privacy", "protondb bug reports saved"],
+  ["set-pc", "PC check", "problems driver"],
+  ["set-obs", "OBS game capture", "record stream"],
+  ["set-kept", "Your game settings", "launch options export"],
+  ["set-advanced", "Advanced", "self-test restore all"],
+  ["set-about", "About & uninstall", "version remove"],
+];
+
+function paletteItems() {
+  const items = [];
+  for (const g of (state.overview && state.overview.games) || []) {
+    items.push({ kind: "Game", label: g.name, words: `${g.name} ${g.app_id}`, run: () => { closeSettings(); state.tab = "overview"; showGame(g.app_id); } });
+  }
+  const ins = insightsFor(state.selected);
+  const game = state.detail && state.detail.summary;
+  for (const sug of (ins && ins.suggestions) || []) {
+    items.push({ kind: "Fix", label: `${sug.title}${game ? ` (${game.name})` : ""}`, words: `fix ${sug.title}`, run: () => { closeSettings(); state.tab = "fixes"; renderMain(); } });
+  }
+  for (const [id, label, words] of SETTING_SECTIONS) {
+    items.push({ kind: "Settings", label, words: `settings ${label} ${words}`, run: () => openSettings(id) });
+  }
+  const actions = [
+    ["Report a problem", "bug report send", () => openReport({ appId: state.selected })],
+    ["Check for updates", "update new version", () => { openSettings("set-updates"); checkUpdates(false); }],
+    ["Run the PC check", "problems", () => { openSettings("set-pc"); runPcCheck(); }],
+    ["Close Steam for me", "steam exit quit", closeSteam],
+    ["Open Steam", "steam start", openSteam],
+    ["Show the tour", "help tour guide", startTour],
+    ["Keyboard shortcuts", "keys help", openShortcuts],
+    ["What's new", "changes release notes", openWhatsNew],
+    ["About CachyPlay", "version", openAbout],
+    ["Quit CachyPlay", "exit close", () => invoke("quit_app")],
+  ];
+  for (const [label, words, run] of actions) items.push({ kind: "Action", label, words: `${label} ${words}`, run });
+  return items;
+}
+
+function openPalette() {
+  closeMenus();
+  const dlg = $("palette");
+  if (dlg.open) return;
+  state.palette = { items: paletteItems(), shown: [], index: 0 };
+  $("palette-input").value = "";
+  renderPalette();
+  dlg.showModal();
+  $("palette-input").focus();
+}
+
+function renderPalette() {
+  const p = state.palette;
+  const words = $("palette-input").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  p.shown = p.items.filter((it) => words.every((w) => it.words.toLowerCase().includes(w))).slice(0, 12);
+  p.index = Math.min(p.index, Math.max(0, p.shown.length - 1));
+  const list = $("palette-list");
+  if (!p.shown.length) {
+    list.replaceChildren(h("li", { class: "empty-row" }, "Nothing matches. Try a game's name, a setting, or words like \"update\" or \"report\"."));
+    return;
+  }
+  list.replaceChildren(...p.shown.map((it, i) => h("li", {
+    role: "option", "aria-selected": i === p.index ? "true" : "false",
+    onclick: () => runPaletteItem(i), onmousemove: () => { if (p.index !== i) { p.index = i; renderPalette(); } },
+  }, h("span", { class: "palette-kind" }, it.kind), h("span", {}, it.label))));
+}
+
+function runPaletteItem(i) {
+  const it = state.palette.shown[i];
+  $("palette").close();
+  if (it) it.run();
+}
+
+function paletteKeys(e) {
+  const p = state.palette;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    p.index = (p.index + (e.key === "ArrowDown" ? 1 : -1) + p.shown.length) % Math.max(1, p.shown.length);
+    renderPalette();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    runPaletteItem(p.index);
+  }
+}
+
+/* ---------- first-run tour (new installs only; replay from Help) ---------- */
+const TOUR = [
+  ["#rail", "Your games", "Every installed Steam game, with a traffic light: green runs fine, yellow works with a fix (or one is being tested), red isn't working, grey not played lately. Games that need you are at the top."],
+  [".hero-text", "What happened", "For the game you pick: what happened, why (and how sure CachyPlay is), and what to do next, in three lines."],
+  [".hero-actions", "Fix it", "When there's a one-click fix, Fix it applies it. Everything CachyPlay changes can be undone, and it asks whether it worked after you play."],
+  ['#tab-fixes', "The Fixes tab", "Every suggestion, ruled-out tries, and what's applied right now with an Undo button for each."],
+  ["#open-settings", "Settings", "Updates, the PC check, appearance and privacy. Help (?) has bug reports, shortcuts and this tour. Press Ctrl+K any time to search everything."],
+];
+state.tourStep = -1;
+
+function startTour() {
+  closeMenus();
+  closeSettings();
+  for (const d of document.querySelectorAll("dialog[open]")) d.close();
+  state.tourStep = 0;
+  showTourStep();
+}
+
+function showTourStep() {
+  document.querySelectorAll(".tour-target").forEach((el) => el.classList.remove("tour-target"));
+  const [sel, title, text] = TOUR[state.tourStep];
+  const box = $("tour");
+  $("tour-count").textContent = `Step ${state.tourStep + 1} of ${TOUR.length}`;
+  $("tour-title").textContent = title;
+  $("tour-text").textContent = text;
+  $("tour-back").hidden = state.tourStep === 0;
+  $("tour-next").textContent = state.tourStep === TOUR.length - 1 ? "Done" : "Next";
+  box.hidden = false;
+  const target = document.querySelector(sel);
+  if (target) {
+    target.classList.add("tour-target");
+    target.scrollIntoView({ block: "nearest" });
+    const r = target.getBoundingClientRect();
+    const w = box.offsetWidth, hgt = box.offsetHeight;
+    let left = Math.min(Math.max(16, r.left), window.innerWidth - w - 16);
+    let top = r.bottom + 12;
+    if (top + hgt > window.innerHeight - 16) top = Math.max(16, r.top - hgt - 12);
+    if (r.width > window.innerWidth * 0.2 && r.height > window.innerHeight * 0.5) {
+      left = Math.min(r.right + 16, window.innerWidth - w - 16);
+      top = Math.max(16, r.top + 40);
+    }
+    box.style.left = `${left}px`;
+    box.style.top = `${top}px`;
+  } else {
+    box.style.left = `${(window.innerWidth - box.offsetWidth) / 2}px`;
+    box.style.top = `${(window.innerHeight - box.offsetHeight) / 2}px`;
+  }
+  $("tour-next").focus();
+}
+
+function tourMove(step) {
+  const next = state.tourStep + step;
+  if (next >= TOUR.length) return endTour();
+  state.tourStep = Math.max(0, next);
+  showTourStep();
+}
+
+function endTour() {
+  $("tour").hidden = true;
+  document.querySelectorAll(".tour-target").forEach((el) => el.classList.remove("tour-target"));
+  state.tourStep = -1;
+  if (!state.settings.tour_seen) setAppSetting("tour_seen", true);
+}
+
+/* ---------- What's new and About ---------- */
+async function openWhatsNew() {
+  let md = "";
+  try {
+    md = await invoke("whats_new");
+  } catch (e) {
+    md = String(e);
+  }
+  $("whatsnew-title").textContent = `What's new in ${(state.appInfo && state.appInfo.version) || "CachyPlay"}`;
+  $("whatsnew-notes").replaceChildren(...notesView(md));
+  $("whatsnew-dialog").showModal();
+}
+
+function openAbout() {
+  const o = state.overview || {};
+  const u = state.update || {};
+  $("about-version").textContent = `Version ${(state.appInfo && state.appInfo.version) || o.version || ""}${u.channel ? ` · ${CHANNEL_NAME[u.channel]} channel` : ""}`;
+  $("about-facts").replaceChildren(
+    h("dt", {}, "Installed at"), h("dd", {}, o.installed_cli || "Not installed yet"),
+    h("dt", {}, "Licence"), h("dd", {}, "MIT"),
+    h("dt", {}, "Source"), h("dd", {}, `github.com/${(state.appInfo && state.appInfo.repo) || "Matt-B-007/CachyPlay"}`),
+    h("dt", {}, "Fonts and icons"), h("dd", {}, "Inter and JetBrains Mono (SIL OFL), Lucide (ISC)"));
+  $("about-dialog").showModal();
+}
+
+/* ---------- uninstall (House Standard dialog) ---------- */
+function openUninstall() {
+  $("uninstall-ask").hidden = false;
+  $("uninstall-done").hidden = true;
+  $("un-delete-settings").checked = false;
+  $("un-delete-backups").checked = false;
+  $("un-keep-settings").checked = true;
+  $("uninstall-go").disabled = false;
+  $("uninstall-go").textContent = "Uninstall";
+  $("uninstall-dialog").showModal();
+  $("uninstall-cancel").focus();
+}
+
+async function uninstallNow() {
+  const go = $("uninstall-go");
+  go.disabled = true;
+  go.textContent = "Uninstalling…";
+  try {
+    const msg = await invoke("uninstall", {
+      removeBackups: $("un-delete-backups").checked,
+      keepSettings: $("un-keep-settings").checked,
+      deleteSettings: $("un-delete-settings").checked,
+    });
+    $("uninstall-result").textContent = msg;
+    $("uninstall-ask").hidden = true;
+    $("uninstall-done").hidden = false;
+    $("uninstall-close").focus();
+  } catch (e) {
+    go.disabled = false;
+    go.textContent = "Uninstall";
+    toast(`Couldn't uninstall: ${e}`, "error");
+  }
+}
+
+/* ---------- start-up: tour for new installs, "what's new" after an update ---------- */
+async function afterStart() {
+  try {
+    state.appInfo = await invoke("app_info");
+  } catch {
+    state.appInfo = {};
+  }
+  if (state.appInfo.new_install && !state.settings.tour_seen) {
+    setTimeout(startTour, 600);
+  } else if (state.appInfo.updated_from) {
+    toast(`CachyPlay was updated to ${state.appInfo.version}.`, "success", { label: "What's new", run: openWhatsNew });
+  }
+}
+
 /* ---------- wiring ---------- */
-$("open-settings").addEventListener("click", openSettings);
-$("open-reports").addEventListener("click", openReports);
-$("general-report").addEventListener("click", () => saveReport(null));
-$("open-issues").addEventListener("click", () => invoke("open_issue_page").catch((e) => toast(String(e), "error")));
-$("update-pill").addEventListener("click", openUpdateDialog);
+$("open-settings").addEventListener("click", () => openSettings());
+$("open-help").addEventListener("click", (e) => { e.stopPropagation(); toggleHelp(); });
+for (const b of document.querySelectorAll("[data-help]")) b.addEventListener("click", () => helpAction(b.dataset.help));
+$("help-menu").addEventListener("keydown", (e) => {
+  const items = [...$("help-menu").querySelectorAll("button")];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
+  }
+});
+document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) closeMenus(); });
+$("open-palette").addEventListener("click", (e) => { e.preventDefault(); openPalette(); });
+$("palette-input").addEventListener("input", () => { state.palette.index = 0; renderPalette(); });
+$("palette-input").addEventListener("keydown", paletteKeys);
+$("palette").addEventListener("click", (e) => { if (e.target === $("palette")) $("palette").close(); });
+for (const b of document.querySelectorAll("[data-close]")) b.addEventListener("click", () => b.closest("dialog").close());
+$("whatsnew-tour").addEventListener("click", () => { $("whatsnew-dialog").close(); startTour(); });
+$("tour-next").addEventListener("click", () => tourMove(1));
+$("tour-back").addEventListener("click", () => tourMove(-1));
+$("tour-skip").addEventListener("click", endTour);
+$("report-save").addEventListener("click", reportSave);
+$("report-copy").addEventListener("click", reportCopy);
+$("report-logs").addEventListener("click", reportLogs);
+$("report-close").addEventListener("click", () => $("report-dialog").close());
+for (const id of ["report-summary", "report-description"]) {
+  // Changing the words after saving makes a new file with them.
+  $(id).addEventListener("input", () => { if (state.report) state.report.saved = null; });
+}
+$("update-pill").addEventListener("click", () => openUpdateDialog());
+$("update-later").addEventListener("click", () => $("update-dialog").close());
+$("update-skip").addEventListener("click", skipThisVersion);
 $("check-updates").addEventListener("click", () => checkUpdates(false));
 $("roll-back").addEventListener("click", rollBack);
 $("copy-command").addEventListener("click", copyCommand);
@@ -1778,7 +2218,10 @@ for (const r of document.querySelectorAll('input[name="channel"]')) {
   r.addEventListener("change", () => r.checked && setChannel(r.value));
 }
 $("restore-all").addEventListener("click", restoreAll);
-$("uninstall").addEventListener("click", uninstall);
+$("uninstall").addEventListener("click", openUninstall);
+$("uninstall-cancel").addEventListener("click", () => $("uninstall-dialog").close());
+$("uninstall-go").addEventListener("click", uninstallNow);
+$("uninstall-close").addEventListener("click", () => { $("uninstall-dialog").close(); closeSettings(); load(); });
 $("rail").addEventListener("keydown", railKeys);
 $("close-settings").addEventListener("click", closeSettings);
 $("run-pc-check").addEventListener("click", runPcCheck);
@@ -1788,15 +2231,15 @@ for (const r of document.querySelectorAll('input[name="theme"]')) {
 }
 $("big-screen").addEventListener("change", (e) => setAppSetting("big_screen", e.target.checked));
 $("protondb").addEventListener("change", (e) => setAppSetting("protondb", e.target.checked));
+$("daily-check").addEventListener("change", (e) => setAppSetting("daily_check", e.target.checked));
+$("tray").addEventListener("change", (e) => setAppSetting("tray", e.target.checked));
 for (const a of document.querySelectorAll(".settings-nav a")) {
   a.addEventListener("click", (e) => {
     e.preventDefault();
     document.querySelector(a.getAttribute("href")).scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("settings").hidden && !document.querySelector("dialog[open]")) closeSettings();
-});
+document.addEventListener("keydown", onKey);
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyDisplay);
 $("search").addEventListener("input", (e) => { state.query = e.target.value.trim().toLowerCase(); renderRail(); });
 
@@ -1808,9 +2251,10 @@ window.addEventListener("unhandledrejection", (e) => {
   invoke("log_ui_error", { message: `unhandled: ${e.reason}` }).catch(() => {});
 });
 
-loadAppSettings().then(load).then(showLastCrash);
+loadAppSettings().then(load).then(showLastCrash).then(afterStart);
 startWatching();
-// Check for a newer CachyPlay once at startup (at most once a day online), in the background.
-checkUpdates(true);
+// The daily check for a newer CachyPlay (uses a copy of GitHub's answer up to a day old), unless
+// turned off in Settings › Updates.
+loadAppSettings().then(() => { if (state.settings.daily_check !== false) checkUpdates(true); });
 // Quietly check the PC; problems show as a banner.
 runPcCheck();

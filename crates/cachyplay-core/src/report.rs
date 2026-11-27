@@ -24,6 +24,68 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Report {
     pub path: PathBuf,
     pub files: Vec<String>,
+    /// The report's summary as saved (personal details already removed), for "Copy report".
+    pub text: String,
+}
+
+/// What the person typed in the Report a problem dialog.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct UserNote {
+    pub summary: String,
+    pub description: String,
+}
+
+/// The lines every report starts with (House Standard): app, version, channel, install type,
+/// distro, desktop, Wayland/X11, kernel.
+pub fn header(paths: &Paths) -> Vec<(&'static str, String)> {
+    let read = |p: &str| fs::read_to_string(p).ok().map(|s| s.trim().to_string());
+    let distro = read("/etc/os-release")
+        .and_then(|t| {
+            t.lines().find_map(|l| {
+                l.strip_prefix("PRETTY_NAME=")
+                    .map(|v| v.trim_matches('"').to_string())
+            })
+        })
+        .unwrap_or_else(|| "unknown".into());
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let session = match env("XDG_SESSION_TYPE").as_deref() {
+        Some("wayland") => "Wayland".to_string(),
+        Some("x11") => "X11".to_string(),
+        Some(other) => other.to_string(),
+        None if env("WAYLAND_DISPLAY").is_some() => "Wayland".into(),
+        None if env("DISPLAY").is_some() => "X11".into(),
+        None => "unknown".into(),
+    };
+    let settings = crate::update::Settings::load_read_only(paths);
+    let kind = match crate::update::install_kind(paths) {
+        crate::update::InstallKind::User => "user install (~/.local/bin)",
+        crate::update::InstallKind::Package => "package (AUR)",
+        crate::update::InstallKind::NotInstalled => "not installed (running from a folder)",
+    };
+    vec![
+        ("App", "CachyPlay".into()),
+        ("Version", crate::VERSION.into()),
+        ("Channel", format!("{:?}", settings.channel)),
+        ("Install type", kind.into()),
+        ("Distro", distro),
+        (
+            "Desktop",
+            env("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "unknown".into()),
+        ),
+        ("Session", session),
+        (
+            "Kernel",
+            read("/proc/sys/kernel/osrelease").unwrap_or_else(|| "unknown".into()),
+        ),
+    ]
+}
+
+/// `header` as lines of text.
+pub fn header_text(paths: &Paths) -> String {
+    header(paths)
+        .into_iter()
+        .map(|(k, v)| format!("{k}: {v}\n"))
+        .collect()
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -91,6 +153,16 @@ pub fn file_name(app_id: Option<&str>, at: &chrono::DateTime<chrono::Local>) -> 
 }
 
 pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<Report> {
+    create_with(paths, ctx, game, None)
+}
+
+/// A report with what the person wrote in the Report a problem dialog at the top.
+pub fn create_with(
+    paths: &Paths,
+    ctx: Option<&Ctx>,
+    game: Option<&Game>,
+    note: Option<&UserNote>,
+) -> Result<Report> {
     let clicked = chrono::Local::now();
     let now = clicked.naive_local();
     let dir = paths.report_dir();
@@ -534,6 +606,26 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
     if general {
         s.push_str(&general_sections(paths, ctx));
     }
+    // The standard header, and what the person wrote, go first.
+    let mut top = String::from("## About this report\n\n");
+    for (k, v) in header(paths) {
+        top.push_str(&format!("- {k}: {v}\n"));
+    }
+    if let Some(n) =
+        note.filter(|n| !n.summary.trim().is_empty() || !n.description.trim().is_empty())
+    {
+        top.push_str("\n## In your words\n\n");
+        if !n.summary.trim().is_empty() {
+            top.push_str(&format!("**{}**\n\n", n.summary.trim()));
+        }
+        if !n.description.trim().is_empty() {
+            top.push_str(&format!("{}\n", n.description.trim()));
+        }
+    }
+    let s = match s.split_once('\n') {
+        Some((title, rest)) if title.starts_with("# ") => format!("{title}\n\n{top}\n{rest}"),
+        _ => format!("{top}\n{s}"),
+    };
     files.push(("00-summary.md".into(), s));
 
     files.push((
@@ -648,9 +740,15 @@ pub fn create(paths: &Paths, ctx: Option<&Ctx>, game: Option<&Game>) -> Result<R
     }
     let dest = dir.join(&name);
     fs::rename(&tmp, &dest)?;
+    let text = files
+        .iter()
+        .find(|(p, _)| p == "00-summary.md")
+        .map(|(_, body)| redact.apply(body))
+        .unwrap_or_default();
     Ok(Report {
         path: dest,
         files: files.into_iter().map(|(p, _)| p).collect(),
+        text,
     })
 }
 
@@ -1076,7 +1174,18 @@ pub fn redact_patterns(text: &str) -> String {
 /// Four dotted numbers that are a version, not a network address: a package version followed by
 /// its release number ("steam 1.0.0.85-3"), or a value on a "…Version" line ("conformanceVersion
 /// = 1.4.3.0").
+/// A dotted number that's a version, not an IP address: `v0.11.0.1`, `shellcheck-py==0.11.0.1`,
+/// `pkg@1.2.3.4`, `foo-1.2.3.4`, `version 1.2.3.4`, or followed by `-1` (a package release).
 fn looks_like_version(text: &str, start: usize, end: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    if before.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '@' | '-' | '_'))
+        || text[..start].ends_with("==")
+        || text[..start].ends_with(">=")
+        || text[..start].ends_with("<=")
+        || text[..start].ends_with("~=")
+    {
+        return true;
+    }
     let after = &text[end..];
     let mut a = after.chars();
     if a.next() == Some('-') && a.next().is_some_and(|c| c.is_ascii_digit()) {
@@ -1231,6 +1340,20 @@ mod tests {
         assert!(clean.contains("12:11:26"), "times kept");
         assert_eq!(clean.lines().filter(|l| l.contains("Xid")).count(), 7);
         assert!(redact_patterns("addr fe80::3cc:177e:6db:b541 x").contains("<ip>"));
+        // Version numbers are not IP addresses.
+        for v in [
+            "shellcheck-py==0.11.0.1",
+            "pip install foo>=1.2.3.4",
+            "v1.2.3.4",
+            "lib@2.0.0.1",
+            "mesa-25.1.0.1",
+            "proton_9.0.1.2",
+            "version: 10.0.0.1",
+        ] {
+            assert_eq!(redact_patterns(v), v, "{v}");
+        }
+        assert_eq!(redact_patterns("from 10.0.0.1 port"), "from <ip> port");
+        assert_eq!(redact_patterns("IP=192.168.1.20"), "IP=<ip>");
         assert_eq!(
             redact_patterns("IP 0.0.0.0:0 and 1.4.357"),
             "IP 0.0.0.0:0 and 1.4.357"
@@ -1286,6 +1409,37 @@ mod tests {
             r.apply("AppID 1240440 and 76561197960287930"),
             "AppID 1240440 and <steamid>"
         );
+    }
+
+    #[test]
+    fn reports_start_with_the_standard_header_and_your_words() {
+        let f = FakeSteam::new();
+        let ctx = f.ctx();
+        let note = UserNote {
+            summary: "Halo freezes online".into(),
+            description: format!("It froze at {}/x after 5 min", f.home().display()),
+        };
+        let r = create_with(&f.paths(), Some(&ctx), None, Some(&note)).unwrap();
+        for key in [
+            "App: CachyPlay",
+            "Version:",
+            "Channel:",
+            "Install type:",
+            "Distro:",
+            "Desktop:",
+            "Session:",
+            "Kernel:",
+        ] {
+            assert!(r.text.contains(key), "missing {key} in:\n{}", r.text);
+        }
+        assert!(r.text.contains("**Halo freezes online**"));
+        assert!(
+            r.text.contains("It froze at ~/x"),
+            "your words are redacted too: {}",
+            r.text
+        );
+        let header = header_text(&f.paths());
+        assert!(header.starts_with("App: CachyPlay\nVersion: "));
     }
 
     #[test]

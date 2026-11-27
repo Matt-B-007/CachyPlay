@@ -20,9 +20,37 @@ v0.1.0-beta.13 (everything from beta.12, plus the test fix), v0.1.0-beta.14 (eve
 undoable and remembered, no constant refreshing, reliable start records, per-game fixes),
 v0.1.0-beta.15 (never published: a script check failed on GitHub), v0.1.0-beta.16 (everything
 planned for beta.15: the window never freezes, signed updates, one window, crash notice; plus the
-script fix).
+script fix), v0.1.0-beta.17 (the family look: new colours, fonts, icons and logo, Help menu,
+Ctrl+K search, keyboard shortcuts, first-run tour, standard update/report/uninstall dialogs,
+optional tray icon).
 
 ### Added
+- **Help menu (beta.17)**: the **?** button at the top right has Report a problem, What's new,
+  Keyboard shortcuts, Show the tour and About, in the same place as in the other apps.
+- **Search everything with Ctrl+K (beta.17)**: games, the open game's fixes, every Settings
+  section, and actions like Report a problem, Check for updates or Close Steam for me.
+- **Keyboard shortcuts (beta.17)**: Ctrl+K search, Ctrl+, Settings, **?** this list, F1 the Help
+  menu, **/** search games, Esc back, Ctrl+Q quit. Buttons show their shortcut when you hover.
+- **First-run tour (beta.17)**: five short steps (the game list and its traffic lights, What
+  happened, Fix it, the Fixes tab, Settings). It starts by itself only on a new install, can be
+  skipped, and is always in Help › Show the tour. After an update, CachyPlay offers What's new
+  instead.
+- **Report a problem (beta.17)**: one dialog for every report: a short summary, what happened, and
+  a preview of what's included, then **Save to file**, **Copy report** or **Open log folder**.
+  Sending is a separate step: **Open on GitHub** (fills in the summary and system details and asks
+  you to attach the file; it says when only the owner can see the repository), **NVIDIA forum**,
+  or the game's **Steam discussions**. Tell NVIDIA, Tell the developer, every error message and the
+  "closed unexpectedly" notice open it. Reports now start with the app, version, channel, install
+  type, distro, desktop, Wayland/X11 and kernel.
+- **Skip this version (beta.17)**: in the update dialog, with Undo. Settings › Updates shows when
+  CachyPlay last checked, and the daily check can be turned off.
+- **Tray icon (beta.17, optional)**: off unless turned on in Settings › General. Lit while a game
+  runs, a red badge when CachyPlay is off for the game you're playing, an amber dot while a fix is
+  being tested, a change waits for Steam, or an update is ready, a red dot after a crash, grey when
+  Steam isn't found. It needs libayatana-appindicator (CachyPlay says so if it's missing). When the
+  tray is off, a crash while CachyPlay is in the background shows a desktop notification.
+- **Undo right in the message (beta.17)**: resetting a game's Windows files or shader cache, and
+  turning CachyPlay off for a game, show an Undo button in the message that confirms it.
 - **Signed updates (beta.16)**: every release is signed, and CachyPlay checks the signature (two
   built-in keys: the one GitHub uses and an offline backup) as well as the checksum. A release
   without a signature isn't offered, and a tampered one is refused with nothing changed. Releases
@@ -209,6 +237,40 @@ script fix).
   default in the app; `cachyplay uninstall --keep-settings` in the terminal.
 
 ### Changed
+- **The family look (beta.17)**: the same colours, corners, spacing and type as Gimbot, Sluice,
+  StowLock and Stream Preflight: navy-tinted dark and light backgrounds, cards with a faint accent
+  edge, small accent corner brackets on the focused card and the selected game, a soft glow only on
+  the main action (Fix it) and the focused control, and a faint dot grid behind empty areas (none
+  when motion is reduced). Every colour lives in one file (`ui/tokens.css`), and a test checks that
+  every text colour reaches 4.5:1 on every surface in both themes, plus the ink on accent buttons.
+- **New accent: aerospace orange (beta.17)**: CachyPlay's colour changes from cyan to orange
+  (#FF7A45, a darker #B23A0A in the light theme), so each app in the family has its own. System
+  theme now follows only your desktop's light or dark setting; the accent is always CachyPlay's
+  own (it no longer takes KDE's accent colour). Warnings stay amber and errors red, and every banner
+  starts with its status icon, so a warning never looks like the accent.
+- **Fonts and icons (beta.17)**: Inter for text and JetBrains Mono for code and logs (both built
+  in, nothing downloaded), and Lucide icons.
+- **New logo (beta.17)**: the shield and play button in solid orange on a dark navy rounded square,
+  no gradient, sharp down to 16 px. The tray icon's "game running" state is orange too. Installed in every size from 16 to 512 px.
+- **Top bar (beta.17)**: update button (only when there's an update), Help, Settings. Bug reports
+  you saved moved to Settings › Privacy.
+- **Settings in the standard order (beta.17)**: General, Appearance, Updates, Privacy, PC check, OBS
+  game capture, Your game settings, Advanced, About & uninstall (with the red Uninstall box last).
+- **Update dialog (beta.17)**: "CachyPlay X is available" with a Beta tag, "You have X", release
+  notes, **Update now · Later · Skip this version**, a progress bar, then "Update installed. Restart
+  to use it." On a beta while following Stable it says it installs the newest normal version.
+- **Uninstall dialog (beta.17)**: says what's removed and what isn't touched. **Also delete my
+  settings and logs** is off by default, so settings and logs now stay unless you tick it (the
+  command line has `--delete-settings`). Ends with "CachyPlay is uninstalled. Thanks for trying it."
+- **While the window is hidden (beta.17)**: still no window updates, but a light look every 10
+  seconds keeps the tray icon or crash notifications current.
+- **Version numbers stay in bug reports (beta.17)**: numbers like `0.11.0.1` after `==`, `v`, `@`,
+  `-` or a name are no longer mistaken for IP addresses.
+- **`scripts/check.sh` (beta.17)**: lists every missing tool at once with the CachyOS/Arch install
+  command, and exits with 3 when only tools are missing (1 when a check fails). Colours only in a
+  terminal, never with NO_COLOR. A different shellcheck version on a PC is a note, not a failure
+  (GitHub still requires the pinned one).
+
 - **The window never freezes (beta.16)**: everything that reads the disk, Steam or other programs now
   runs in the background, not on the window's thread (46 actions moved), so scanning a big library
   or checking the PC no longer stops the window responding.

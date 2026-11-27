@@ -49,12 +49,12 @@ impl Default for Channel {
 }
 
 /// The settings file's format. Bump it and add a step to `migrate` when the format changes.
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 /// A copy of the settings is kept at most this often (seconds), newest 5 kept.
 const SETTINGS_BACKUP_EVERY: u64 = 15 * 60;
 const SETTINGS_BACKUPS_KEPT: usize = 5;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// Format of this file (see `SETTINGS_VERSION`). Missing means the format before beta.16.
     #[serde(default)]
@@ -70,6 +70,38 @@ pub struct Settings {
     /// "system" (follow the desktop), "dark" or "light".
     #[serde(default)]
     pub theme: Option<String>,
+    /// "Skip this version": this release isn't offered (the next one is).
+    #[serde(default)]
+    pub skipped_version: Option<String>,
+    /// Look for a new version once a day by itself. On unless turned off.
+    #[serde(default = "yes")]
+    pub daily_check: bool,
+    /// The first-run tour was shown (or skipped). New installs show it once by themselves.
+    #[serde(default)]
+    pub tour_seen: bool,
+    /// Show a tray icon with CachyPlay's status. Off unless turned on.
+    #[serde(default)]
+    pub tray: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            settings_version: 0,
+            channel: Channel::default(),
+            protondb: false,
+            big_screen: false,
+            theme: None,
+            skipped_version: None,
+            daily_check: true,
+            tour_seen: false,
+            tray: false,
+        }
+    }
 }
 
 impl Settings {
@@ -91,6 +123,14 @@ impl Settings {
             let _ = s.save(paths);
         }
         s
+    }
+
+    /// Read the settings without upgrading or saving the file (for reports and checks).
+    pub fn load_read_only(paths: &Paths) -> Settings {
+        read_json::<serde_json::Value>(&Self::file(paths))
+            .map(|v| migrate(v).0)
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
     }
 
     /// Save with a temp file and rename, keeping a rolling copy of the previous file.
@@ -129,6 +169,11 @@ type Migration = fn(&mut serde_json::Value);
 const MIGRATIONS: [Migration; SETTINGS_VERSION as usize] = [
     // 0 → 1 (beta.16): only the version number was added.
     |_| {},
+    // 1 → 2 (beta.17): Skip this version, the daily check switch, the tour and the tray. Someone
+    // who already used CachyPlay has seen it, so the tour is offered, not shown by itself.
+    |v| {
+        v["tour_seen"] = serde_json::json!(true);
+    },
 ];
 
 /// Bring a settings file of any earlier format up to `SETTINGS_VERSION`. Returns the new value and
@@ -204,6 +249,10 @@ pub struct UpdateStatus {
     /// Channel set to Stable while running a beta that's newer than the newest stable: that
     /// stable version, offered with a "Switch to Stable now" button (it's an older version).
     pub stable_now: Option<Release>,
+    /// The newest release is one you chose to skip: it isn't offered (`available` is false).
+    pub skipped: bool,
+    /// When CachyPlay last asked GitHub (RFC 3339, local time).
+    pub last_checked: Option<String>,
 }
 
 pub fn install_kind(paths: &Paths) -> InstallKind {
@@ -224,6 +273,58 @@ pub fn package_command(channel: Channel) -> String {
     match channel {
         Channel::Stable => "paru -S cachyplay".into(),
         Channel::Beta => "paru -S cachyplay-beta".into(),
+    }
+}
+
+/// "What's new" for `version`, from the changelog: the bullets marked with this beta (for
+/// example "(beta.17)") under their headings, or this version's whole section for a finished
+/// release. Continuation lines of a bullet are kept with it.
+pub fn whats_new(changelog: &str, version: &str) -> String {
+    let base = version.split('-').next().unwrap_or(version);
+    let section = changelog
+        .split("\n## [")
+        .find(|s| s.starts_with(&format!("{base}]")))
+        .unwrap_or("");
+    let tag = version.split_once('-').map(|(_, pre)| format!("({pre})"));
+    let Some(tag) = tag else {
+        return section
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+    };
+    let mut out = String::new();
+    let mut heading: Option<&str> = None;
+    let mut keep = false;
+    for line in section.lines() {
+        if let Some(hd) = line.strip_prefix("### ") {
+            heading = Some(hd);
+            keep = false;
+        } else if line.starts_with("- ") {
+            keep = line.contains(&tag);
+            if keep {
+                if let Some(hd) = heading.take() {
+                    out.push_str(&format!("\n### {hd}\n"));
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else if keep && line.starts_with("  ") {
+            out.pop();
+            out.push(' ');
+            out.push_str(line.trim());
+            out.push('\n');
+        } else {
+            keep = false;
+        }
+    }
+    let out = out.trim().to_string();
+    if out.is_empty() {
+        format!("CachyPlay {version}. See CHANGELOG.md for the full list of changes.")
+    } else {
+        out.replace(&format!(" {tag}"), "")
     }
 }
 
@@ -416,6 +517,8 @@ fn check_with(paths: &Paths, force: bool) -> UpdateStatus {
         newer_beta: None,
         no_releases: false,
         stable_now: None,
+        skipped: false,
+        last_checked: None,
     };
     match releases_cached(paths, force) {
         Ok(releases) => {
@@ -426,6 +529,16 @@ fn check_with(paths: &Paths, force: bool) -> UpdateStatus {
                 _ => false,
             };
             status.available = newer(&latest);
+            if status.available
+                && latest.as_ref().map(|r| r.tag.trim_start_matches('v'))
+                    == settings
+                        .skipped_version
+                        .as_deref()
+                        .map(|t| t.trim_start_matches('v'))
+            {
+                status.available = false;
+                status.skipped = true;
+            }
             if !status.available && settings.channel == Channel::Stable {
                 let beta = pick(&releases, Channel::Beta);
                 if newer(&beta) {
@@ -440,6 +553,13 @@ fn check_with(paths: &Paths, force: bool) -> UpdateStatus {
         }
         Err(e) => status.error = Some(format!("{e:#}")),
     }
+    status.last_checked = fs::metadata(paths.state.join("releases.json"))
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+        });
     status
 }
 
@@ -795,6 +915,13 @@ mod tests {
         assert!(changed);
         assert_eq!(v["settings_version"], SETTINGS_VERSION);
         assert_eq!(v["channel"], "beta");
+        assert_eq!(
+            v["tour_seen"], true,
+            "existing users aren't shown the tour by itself"
+        );
+        let s: Settings = serde_json::from_value(v.clone()).unwrap();
+        assert!(s.daily_check, "the daily check is on unless turned off");
+        assert!(!s.tray, "the tray is off unless turned on");
         let (_, again) = migrate(v);
         assert!(!again, "already current");
         // A newer file than this version knows is left as it is.
@@ -823,6 +950,21 @@ mod tests {
             1,
             "at most every 15 minutes"
         );
+    }
+
+    #[test]
+    fn whats_new_picks_this_versions_bullets() {
+        let log = "# Changelog\n\n## [0.1.0] - Unreleased\n\nIntro\n\n### Added\n- **A (beta.17)**: one\n  more\n- **B (beta.16)**: old\n\n### Changed\n- **C (beta.17)**: two\n";
+        let w = whats_new(log, "0.1.0-beta.17");
+        assert_eq!(
+            w,
+            "### Added\n- **A**: one more\n\n### Changed\n- **C**: two"
+        );
+        assert!(whats_new(log, "0.1.0").contains("Intro"));
+        assert!(whats_new(log, "0.1.0-beta.99").contains("CHANGELOG"));
+        // The real changelog has notes for this version.
+        let real = whats_new(include_str!("../../../CHANGELOG.md"), crate::VERSION);
+        assert!(real.starts_with("###"), "{real}");
     }
 
     #[test]

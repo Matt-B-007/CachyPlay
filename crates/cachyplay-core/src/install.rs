@@ -11,6 +11,48 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 const ICON_SVG: &str = include_str!("../../../assets/cachyplay.svg");
+/// The same icon drawn at each size, so menus and the taskbar get a sharp picture at 16–512 px.
+const ICON_PNGS: [(u32, &[u8]); 8] = [
+    (16, include_bytes!("../../../assets/icons/cachyplay-16.png")),
+    (24, include_bytes!("../../../assets/icons/cachyplay-24.png")),
+    (32, include_bytes!("../../../assets/icons/cachyplay-32.png")),
+    (48, include_bytes!("../../../assets/icons/cachyplay-48.png")),
+    (64, include_bytes!("../../../assets/icons/cachyplay-64.png")),
+    (
+        128,
+        include_bytes!("../../../assets/icons/cachyplay-128.png"),
+    ),
+    (
+        256,
+        include_bytes!("../../../assets/icons/cachyplay-256.png"),
+    ),
+    (
+        512,
+        include_bytes!("../../../assets/icons/cachyplay-512.png"),
+    ),
+];
+
+/// Write the app icon (SVG and every PNG size) into ~/.local/share/icons, replacing older
+/// versions. Files already up to date aren't rewritten. Returns every icon file.
+fn write_icons(paths: &Paths) -> Result<Vec<PathBuf>> {
+    let base = paths.home.join(".local/share/icons/hicolor");
+    let mut files = Vec::new();
+    let mut put = |path: PathBuf, bytes: &[u8]| -> Result<()> {
+        if fs::read(&path).ok().as_deref() != Some(bytes) {
+            atomic_write(&path, bytes)?;
+        }
+        files.push(path);
+        Ok(())
+    };
+    put(
+        base.join("scalable/apps/cachyplay.svg"),
+        ICON_SVG.as_bytes(),
+    )?;
+    for (n, png) in ICON_PNGS {
+        put(base.join(format!("{n}x{n}/apps/cachyplay.png")), png)?;
+    }
+    Ok(files)
+}
 
 /// The GUI is a separate binary on purpose: the launch wrapper (`cachyplay`) runs before every
 /// game and must start instantly without loading WebKit/GTK.
@@ -42,11 +84,7 @@ pub fn install_user(paths: &Paths, from: &Path) -> Result<PathBuf> {
     copy_exe(from, &bin)?;
     let mut files = vec![bin.clone()];
 
-    let icon = paths
-        .home
-        .join(".local/share/icons/hicolor/scalable/apps/cachyplay.svg");
-    atomic_write(&icon, ICON_SVG.as_bytes())?;
-    files.push(icon);
+    files.extend(write_icons(paths)?);
 
     let gui_src = from.with_file_name(GUI_BIN);
     if gui_src.is_file() {
@@ -95,6 +133,19 @@ pub fn refresh_menu_entries(paths: &Paths) -> bool {
     let old = apps.join("cachyplay.desktop");
     let want = desktop_entry(&gui);
     let current = fs::read_to_string(&main).unwrap_or_default();
+    // The icon may have changed with this version (and older installs only had the SVG).
+    let icons = write_icons(paths).unwrap_or_default();
+    if let Some(mut m) = read_json::<Manifest>(&paths.install_manifest()) {
+        let before = m.files.len();
+        for f in &icons {
+            if !m.files.contains(f) {
+                m.files.push(f.clone());
+            }
+        }
+        if m.files.len() != before {
+            let _ = write_json(&paths.install_manifest(), &m);
+        }
+    }
     if current == want && alias.exists() && !old.exists() {
         return false;
     }
@@ -128,7 +179,14 @@ fn copy_exe(from: &Path, to: &Path) -> Result<()> {
 /// Remove the files `install_user` created, plus CachyPlay's caches and logs.
 /// Save backups and bug reports are kept unless `remove_backups` is set.
 /// Only paths CachyPlay recorded or owns are touched.
-pub fn remove_user_files(paths: &Paths, remove_backups: bool) -> Result<Vec<PathBuf>> {
+/// `delete_settings` ("Also delete my settings and logs", off by default) also removes the settings,
+/// logs, and each game's fixes and history; without it they stay, so a reinstall picks up where
+/// you left off.
+pub fn remove_user_files(
+    paths: &Paths,
+    remove_backups: bool,
+    delete_settings: bool,
+) -> Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
     let manifest: Manifest = read_json(&paths.install_manifest()).unwrap_or_default();
     for f in manifest
@@ -140,17 +198,19 @@ pub fn remove_user_files(paths: &Paths, remove_backups: bool) -> Result<Vec<Path
             removed.push(f);
         }
     }
-    let mut dirs = vec![
-        paths.cache.clone(),
-        paths.state.clone(),
-        paths.config.clone(),
-        paths.data.join("recipes"),
-    ];
-    for sub in ["snapshots", "changes", "fixes"] {
-        dirs.push(paths.data.join(sub));
+    let mut dirs = vec![paths.cache.clone(), paths.data.join("recipes")];
+    if delete_settings {
+        dirs.push(paths.state.clone());
+        dirs.push(paths.config.clone());
+        for sub in ["snapshots", "changes", "fixes", "tries", "notes"] {
+            dirs.push(paths.data.join(sub));
+        }
     }
     if remove_backups {
-        dirs.push(paths.data.clone());
+        dirs.push(paths.data.join("backups"));
+        if delete_settings {
+            dirs.push(paths.data.clone());
+        }
     }
     for d in dirs {
         if d.exists() && fs::remove_dir_all(&d).is_ok() {
@@ -197,13 +257,29 @@ mod tests {
             .path()
             .join(".local/share/icons/hicolor/scalable/apps/cachyplay.svg")
             .exists());
+        let png16 = d
+            .path()
+            .join(".local/share/icons/hicolor/16x16/apps/cachyplay.png");
+        assert!(png16.exists(), "every PNG size is installed");
         fs::create_dir_all(paths.data.join("backups")).unwrap();
-        remove_user_files(&paths, false).unwrap();
+        fs::create_dir_all(&paths.config).unwrap();
+        remove_user_files(&paths, false, false).unwrap();
         assert!(!bin.exists());
+        assert!(paths.config.exists(), "settings are kept unless asked");
+        assert!(!png16.exists(), "icons are removed on uninstall");
         assert!(
             paths.data.join("backups").exists(),
             "backups kept by default"
         );
         assert!(dl.exists(), "the downloaded file itself is not touched");
+        remove_user_files(&paths, false, true).unwrap();
+        assert!(
+            !paths.config.exists(),
+            "\"Also delete my settings and logs\" removes them"
+        );
+        assert!(
+            paths.data.join("backups").exists(),
+            "backups are their own choice"
+        );
     }
 }

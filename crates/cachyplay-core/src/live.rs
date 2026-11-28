@@ -77,10 +77,10 @@ fn sessions_fingerprint(ctx: &Ctx) -> u128 {
     for s in sessions.iter().rev().take(5) {
         h = h
             .wrapping_mul(31)
-            .wrapping_add(s.start.and_utc().timestamp() as u128);
+            .wrapping_add(crate::clock::utc_seconds(s.start) as u128);
         h = h.wrapping_mul(31).wrapping_add(
             s.end
-                .map(|e| e.and_utc().timestamp() as u128 + 1)
+                .map(|e| crate::clock::utc_seconds(e) as u128 + 1)
                 .unwrap_or(0),
         );
     }
@@ -130,6 +130,13 @@ pub enum Action {
     ResetPrefix {
         app_id: String,
     },
+    /// Write the game's fix into Steam's launch options and turn CachyPlay off for it.
+    KeepInSteam {
+        app_id: String,
+    },
+    UndoKeepInSteam {
+        app_id: String,
+    },
 }
 
 impl Action {
@@ -139,7 +146,9 @@ impl Action {
             | Action::Disable { app_id }
             | Action::SwitchTool { app_id, .. }
             | Action::UndoTool { app_id }
-            | Action::ResetPrefix { app_id } => app_id,
+            | Action::ResetPrefix { app_id }
+            | Action::KeepInSteam { app_id }
+            | Action::UndoKeepInSteam { app_id } => app_id,
         }
     }
     pub fn describe(&self, name: &str) -> String {
@@ -149,6 +158,8 @@ impl Action {
             Action::SwitchTool { tool, .. } => format!("Switch {name} to {tool}"),
             Action::UndoTool { .. } => format!("Put {name}'s Proton version back"),
             Action::ResetPrefix { .. } => format!("Reset {name}'s Windows files"),
+            Action::KeepInSteam { .. } => format!("Keep {name}'s fix in Steam"),
+            Action::UndoKeepInSteam { .. } => format!("Undo keeping {name}'s fix in Steam"),
         }
     }
     /// Two actions that cancel or replace each other for the same game.
@@ -164,6 +175,17 @@ impl Action {
                     SwitchTool { .. } | UndoTool { .. },
                     SwitchTool { .. } | UndoTool { .. }
                 ) | (ResetPrefix { .. }, ResetPrefix { .. })
+                    | (
+                        KeepInSteam { .. }
+                            | UndoKeepInSteam { .. }
+                            | Enable { .. }
+                            | Disable { .. },
+                        KeepInSteam { .. } | UndoKeepInSteam { .. }
+                    )
+                    | (
+                        KeepInSteam { .. } | UndoKeepInSteam { .. },
+                        Enable { .. } | Disable { .. }
+                    )
             )
     }
 }
@@ -227,6 +249,12 @@ pub fn run_queue(ctx: &Ctx, bin: Option<&Path>) -> Result<Vec<String>> {
                 Action::UndoTool { .. } => crate::compat::undo(ctx, &g.app_id)?,
                 Action::ResetPrefix { .. } => {
                     crate::prefix::reset(ctx, g)?;
+                }
+                Action::KeepInSteam { .. } => {
+                    crate::keep::keep_in_steam_here(ctx, g)?;
+                }
+                Action::UndoKeepInSteam { .. } => {
+                    crate::keep::undo_keep_in_steam(ctx, g)?;
                 }
             }
             Ok(())

@@ -29,7 +29,7 @@ pub fn is_driver_package(p: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct DriverContext<'a> {
     /// This game's first GPU driver crash.
-    pub first_crash: NaiveDateTime,
+    pub first_crash: DateTime,
     /// The closest driver-related update before it (a kernel module rebuild counts).
     pub closest: Option<&'a DriverUpdate>,
     /// The newest real driver version change before it (not a rebuild of the same version).
@@ -78,7 +78,7 @@ pub fn driver_context(ev: &Evidence) -> Option<DriverContext<'_>> {
         .iter()
         .filter(|r| r.outcome == history::Outcome::Crashed)
         .filter_map(|r| r.session.duration())
-        .map(|d| d.num_seconds())
+        .map(|d| d.as_secs())
         .max()
         .unwrap_or(0);
     let ran_after = version_change
@@ -87,7 +87,7 @@ pub fn driver_context(ev: &Evidence) -> Option<DriverContext<'_>> {
                 .filter(|r| r.session.start > u.at && r.session.start < first_crash)
                 .filter(|r| r.outcome != history::Outcome::Crashed)
                 .filter_map(|r| r.session.duration())
-                .map(|d| d.num_seconds())
+                .map(|d| d.as_secs())
                 .collect()
         })
         .unwrap_or_default();

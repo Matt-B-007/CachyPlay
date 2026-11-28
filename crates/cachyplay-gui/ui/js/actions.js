@@ -113,6 +113,17 @@ async function openUrl(url) {
   }
 }
 
+/* Launch options, each option kept whole: "-nosplash" never wraps after its hyphen. */
+function optionsCode(text, cls) {
+  const words = String(text || "").split(/( +)/);
+  return h("code", { class: cls }, words.map((w) => (w.trim() ? h("span", { class: "tok" }, w) : " ")));
+}
+
+function isWorking(appId) {
+  const p = insightsFor(appId)?.progress;
+  return !!p && ["works_with_fix", "runs_fine"].includes(p.stage);
+}
+
 function canQueueNow() {
   const st = state.overview && state.overview.steam;
   return !!(st && st.can_queue && st.blocked_reason);
@@ -131,6 +142,25 @@ async function setEnabled(appId, on) {
     toast(String(e), "error");
   } finally {
     state.busy = false;
+    await load();
+  }
+}
+
+/* "Keep this fix in Steam" (keep = true) and its Undo. Waits for Steam to close if it's open. */
+async function keepInSteam(appId, keep) {
+  state.busy = true;
+  try {
+    if (canQueueNow()) {
+      toast(await invoke("queue_action", { action: { action: keep ? "keep_in_steam" : "undo_keep_in_steam", app_id: appId } }), "success", { label: "Close Steam for me", run: closeSteam });
+      return;
+    }
+    toast(await invoke(keep ? "keep_in_steam" : "undo_keep_in_steam", { appId }), "success",
+      keep ? { label: "Undo", run: () => keepInSteam(appId, false) } : undefined);
+  } catch (e) {
+    toast(String(e), "error");
+  } finally {
+    state.busy = false;
+    state.insights.delete(appId);
     await load();
   }
 }

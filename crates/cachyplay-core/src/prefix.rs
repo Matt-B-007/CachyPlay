@@ -112,7 +112,7 @@ pub fn reset(ctx: &Ctx, game: &Game) -> Result<PathBuf> {
             game.name
         );
     };
-    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+    let stamp = crate::clock::stamp();
     let target = current.with_file_name(format!("{}{KEPT}{stamp}", game.app_id));
     fs::rename(&current, &target)?;
     Ok(target)
@@ -129,7 +129,7 @@ pub fn undo(ctx: &Ctx, game: &Game) -> Result<()> {
     };
     let current = game.library.join("steamapps/compatdata").join(&game.app_id);
     if current.exists() {
-        let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let stamp = crate::clock::stamp();
         fs::rename(
             &current,
             current.with_file_name(format!("{}{FRESH}{stamp}", game.app_id)),

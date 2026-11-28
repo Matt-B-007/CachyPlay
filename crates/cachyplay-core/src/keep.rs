@@ -12,10 +12,13 @@
 //! Steam when you uninstall, and the game keeps running the same way.
 
 use crate::launch_options::{self, shell_quote, COMMAND};
-use crate::manage::Ctx;
+use crate::manage::{read_json, write_json, ChangeLog, Ctx, Snapshot};
+use crate::paths::Paths;
 use crate::recipes::{self, Facts};
 use crate::steam::Game;
-use serde::Serialize;
+use anyhow::{anyhow, bail, Result};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Setting {
@@ -241,6 +244,171 @@ pub fn standalone_launch_options(
     out
 }
 
+/// What "Keep this fix in Steam" changed, so Undo can put it back exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeptInSteam {
+    pub app_id: String,
+    /// Steam's launch options before (usually with CachyPlay's launch helper).
+    pub before: String,
+    /// The launch options written: the fix, without CachyPlay.
+    pub after: String,
+    pub at: String,
+    pub snapshot: Option<Snapshot>,
+    pub changes: Option<ChangeLog>,
+}
+
+fn kept_path(paths: &Paths, app_id: &str) -> PathBuf {
+    paths
+        .data
+        .join("kept-in-steam")
+        .join(format!("{app_id}.json"))
+}
+
+pub fn kept_in_steam(paths: &Paths, app_id: &str) -> Option<KeptInSteam> {
+    read_json(&kept_path(paths, app_id))
+}
+
+/// Where a game's fix lives, for "Where the fix lives" on its page.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FixHome {
+    /// CachyPlay adds the fix when the game starts (CachyPlay is on for it).
+    pub by_cachyplay: bool,
+    /// The fix is in Steam's own launch options, so it works with CachyPlay off.
+    pub in_steam: bool,
+    /// "Keep this fix in Steam" was used and Steam's launch options haven't changed since.
+    pub can_undo: bool,
+    /// Steam's launch options after "Keep this fix in Steam".
+    pub launch_options: String,
+}
+
+/// Whether one setting is already in the player's own launch options (`-dx12` counts for
+/// CachyPlay's `-force-d3d12`). Programs that aren't installed are left out, as when writing them.
+fn in_options(own: &str, s: &Setting, have_game_performance: bool) -> bool {
+    let (front, back) = own.split_once(COMMAND).unwrap_or((own, ""));
+    if let Some((k, v)) = s
+        .value
+        .split_once('=')
+        .filter(|_| !s.value.starts_with('-'))
+    {
+        return front.split_whitespace().any(|t| {
+            t.split_once('=')
+                .is_some_and(|(tk, tv)| tk == k && tv.trim_matches(['\'', '"']) == v)
+        });
+    }
+    if WRAPPERS.contains(&s.value.as_str()) {
+        return front.split_whitespace().any(|t| t == s.value)
+            || (s.value == "game-performance" && !have_game_performance);
+    }
+    back.split_whitespace()
+        .any(|t| crate::progress::same_option(t, &s.value))
+}
+
+pub fn fix_home(
+    ctx: &Ctx,
+    game: &Game,
+    settings: &[Setting],
+    have_game_performance: bool,
+) -> Option<FixHome> {
+    if settings.is_empty() {
+        return None;
+    }
+    let current = ctx
+        .launch_options(&game.app_id)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let own = launch_options::strip(&current);
+    Some(FixHome {
+        by_cachyplay: launch_options::is_applied(&current),
+        in_steam: settings
+            .iter()
+            .all(|s| in_options(&own, s, have_game_performance)),
+        // Still undoable after CachyPlay was switched back on: only its own part was added.
+        can_undo: kept_in_steam(&ctx.paths, &game.app_id)
+            .is_some_and(|k| k.after.trim() == own.trim()),
+        launch_options: standalone_launch_options(&current, settings, have_game_performance),
+    })
+}
+
+/// Write the game's fix into Steam's own launch options and turn CachyPlay off for it, so it keeps
+/// working without CachyPlay. Steam must be closed. Undo puts everything back.
+pub fn keep_in_steam(
+    ctx: &Ctx,
+    game: &Game,
+    settings: &[Setting],
+    have_game_performance: bool,
+) -> Result<String> {
+    if settings.is_empty() {
+        bail!("{} has no fix to keep.", game.name);
+    }
+    ctx.require_editable()?;
+    let current = ctx.launch_options(&game.app_id)?.unwrap_or_default();
+    let after = standalone_launch_options(&current, settings, have_game_performance);
+    let record = KeptInSteam {
+        app_id: game.app_id.clone(),
+        before: current,
+        after: after.clone(),
+        at: crate::manage::now(),
+        snapshot: ctx.snapshot(&game.app_id),
+        changes: ctx.change_log(&game.app_id),
+    };
+    let path = kept_path(&ctx.paths, &game.app_id);
+    write_json(&path, &record)?;
+    if let Err(e) = ctx.keep_settings(&game.app_id, &after) {
+        let _ = std::fs::remove_file(&path);
+        return Err(e);
+    }
+    Ok(format!(
+        "{}'s fix is in Steam's launch options now, so it keeps working with CachyPlay off.",
+        game.name
+    ))
+}
+
+/// Undo "Keep this fix in Steam": Steam's launch options and CachyPlay's records go back to how
+/// they were. Refuses if the launch options were changed in Steam since.
+pub fn undo_keep_in_steam(ctx: &Ctx, game: &Game) -> Result<String> {
+    ctx.require_editable()?;
+    let path = kept_path(&ctx.paths, &game.app_id);
+    let k = kept_in_steam(&ctx.paths, &game.app_id)
+        .ok_or_else(|| anyhow!("There's nothing to undo for {}.", game.name))?;
+    let current = ctx.launch_options(&game.app_id)?.unwrap_or_default();
+    if launch_options::strip(&current).trim() != k.after.trim() {
+        bail!(
+            "{}'s launch options were changed in Steam since, so CachyPlay left them as they are. Use the CachyPlay switch to turn it back on.",
+            game.name
+        );
+    }
+    ctx.restore_managed(
+        &game.app_id,
+        &k.before,
+        k.snapshot.as_ref(),
+        k.changes.as_ref(),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(if launch_options::is_applied(&k.before) {
+        format!(
+            "Undone: CachyPlay adds {}'s fix again, and Steam's launch options are back as they were.",
+            game.name
+        )
+    } else {
+        format!(
+            "Undone: {}'s launch options are back as they were.",
+            game.name
+        )
+    })
+}
+
+/// The same, with this PC's facts (for the window and the waiting-for-Steam queue).
+pub fn keep_in_steam_here(ctx: &Ctx, game: &Game) -> Result<String> {
+    let settings = settings_for(ctx, game, &Facts::detect());
+    keep_in_steam(
+        ctx,
+        game,
+        &settings,
+        crate::sys::which("game-performance").is_some(),
+    )
+}
+
 /// Every game CachyPlay manages or has fixes for, with its settings and standalone launch options.
 pub fn all(ctx: &Ctx) -> Vec<GameSettings> {
     let facts = Facts::detect();
@@ -275,7 +443,7 @@ pub fn export_text(games: &[GameSettings]) -> String {
     let mut s = String::from("CachyPlay game settings\n=======================\n\n");
     s.push_str(&format!(
         "Saved {} by CachyPlay {}.\n\n",
-        chrono::Local::now().format("%Y-%m-%d %H:%M"),
+        crate::clock::now().strftime("%Y-%m-%d %H:%M"),
         crate::VERSION
     ));
     s.push_str("To use these without CachyPlay: in Steam, right-click the game > Properties > General >\nLaunch options, and paste the line shown for that game.\n\n");
@@ -311,6 +479,82 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn keep_the_fix_in_steam_and_undo_it() {
+        let f = crate::testutil::FakeSteam::new();
+        let ctx = f.ctx();
+        let game = ctx.steam.find_game("1240440").unwrap();
+        ctx.apply(&game, std::path::Path::new("/usr/bin/cachyplay"))
+            .unwrap();
+        let wrapped = ctx.launch_options("1240440").unwrap().unwrap();
+        let settings = [st("PROTON_ENABLE_NVAPI=1"), st("-force-d3d12")];
+        let home = fix_home(&ctx, &game, &settings, false).unwrap();
+        assert!(
+            home.by_cachyplay && !home.in_steam && !home.can_undo,
+            "{home:?}"
+        );
+
+        keep_in_steam(&ctx, &game, &settings, false).unwrap();
+        let kept = ctx.launch_options("1240440").unwrap().unwrap();
+        assert_eq!(
+            kept,
+            "PROTON_ENABLE_NVAPI=1 %command% -nosplash -force-d3d12"
+        );
+        assert!(!ctx.managed_apps().contains(&"1240440".to_string()));
+        let home = fix_home(&ctx, &game, &settings, false).unwrap();
+        assert!(
+            !home.by_cachyplay && home.in_steam && home.can_undo,
+            "{home:?}"
+        );
+
+        // Switching CachyPlay back on keeps Undo available, and Undo takes the fix out of Steam.
+        ctx.apply(&game, std::path::Path::new("/usr/bin/cachyplay"))
+            .unwrap();
+        let home = fix_home(&ctx, &game, &settings, false).unwrap();
+        assert!(
+            home.by_cachyplay && home.in_steam && home.can_undo,
+            "{home:?}"
+        );
+        undo_keep_in_steam(&ctx, &game).unwrap();
+        assert_eq!(ctx.launch_options("1240440").unwrap().unwrap(), wrapped);
+        assert!(ctx.managed_apps().contains(&"1240440".to_string()));
+        assert!(kept_in_steam(&ctx.paths, "1240440").is_none());
+        // Turning CachyPlay off later still restores the original options.
+        ctx.undo("1240440").unwrap();
+        assert_eq!(
+            ctx.launch_options("1240440").unwrap().unwrap(),
+            "%command% -nosplash"
+        );
+    }
+
+    #[test]
+    fn undo_leaves_launch_options_edited_in_steam_alone() {
+        let f = crate::testutil::FakeSteam::new();
+        let ctx = f.ctx();
+        let game = ctx.steam.find_game("1240440").unwrap();
+        keep_in_steam(&ctx, &game, &[st("-force-d3d12")], false).unwrap();
+        ctx.keep_settings("1240440", "%command% -windowed").unwrap();
+        assert!(undo_keep_in_steam(&ctx, &game).is_err());
+        assert_eq!(
+            ctx.launch_options("1240440").unwrap().unwrap(),
+            "%command% -windowed"
+        );
+    }
+
+    #[test]
+    fn a_fix_typed_differently_in_steam_counts_as_there() {
+        let own = "PROTON_ENABLE_NVAPI=1 %command% -dx12";
+        assert!(in_options(own, &st("-force-d3d12"), false));
+        assert!(in_options(own, &st("PROTON_ENABLE_NVAPI=1"), false));
+        assert!(!in_options(own, &st("PROTON_ENABLE_NVAPI=0"), false));
+        assert!(!in_options(own, &st("-force-vulkan"), false));
+        assert!(
+            in_options(own, &st("game-performance"), false),
+            "not installed: nothing to add"
+        );
+        assert!(!in_options(own, &st("game-performance"), true));
+    }
 
     fn st(value: &str) -> Setting {
         Setting {

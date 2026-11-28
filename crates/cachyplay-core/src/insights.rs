@@ -155,15 +155,15 @@ pub fn working_games(
     crashes: &[&CrashEvent],
     app_id: &str,
     min_minutes: i64,
-    now: chrono::NaiveDateTime,
+    now: crate::clock::DateTime,
 ) -> Vec<(String, i64, Option<String>)> {
     let mut best: std::collections::BTreeMap<String, (i64, Option<String>)> = Default::default();
     for s in sessions {
-        if s.app_id == app_id || now - s.start > chrono::Duration::days(30) {
+        if s.app_id == app_id || crate::clock::between(s.start, now) > crate::clock::days(30) {
             continue;
         }
         let Some(d) = s.duration() else { continue };
-        let mins = d.num_minutes();
+        let mins = d.as_mins();
         if mins < min_minutes {
             continue;
         }

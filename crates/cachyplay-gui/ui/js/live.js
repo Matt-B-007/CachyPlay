@@ -34,6 +34,8 @@ async function onLive(l) {
   }
   state.pendingRefresh = false;
   state.lastLoad = Date.now();
+  // Other games' next steps may have changed too (the open game is re-read by load()).
+  for (const id of [...state.insights.keys()]) if (id !== state.selected) state.insights.delete(id);
   await load();
 }
 
@@ -73,7 +75,7 @@ function startWatching() {
       catchUp();
     }
   });
-  document.addEventListener("close", () => setTimeout(catchUp, 0), true); // a dialog closed
+  document.addEventListener("close", () => setTimeout(() => { placeToasts(); catchUp(); }, 0), true); // a dialog closed
   document.addEventListener("focusout", () => setTimeout(catchUp, 0));
 }
 

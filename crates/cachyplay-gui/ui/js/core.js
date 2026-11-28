@@ -33,9 +33,14 @@ function h(tag, attrs = {}, ...kids) {
   }
   for (const kid of kids.flat()) {
     if (kid === null || kid === undefined || kid === false) continue;
-    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+    el.append(kid instanceof Node ? kid : document.createTextNode(possessives(String(kid))));
   }
   return el;
+}
+
+/* "Moon Sweepers's fix" reads better as "Moon Sweepers' fix" (names ending in s). */
+function possessives(text) {
+  return text.includes("s's") ? text.replace(/\b([A-Z0-9][\w-]*s)'s(?![\w])/g, "$1'") : text;
 }
 
 const $ = (id) => document.getElementById(id);
@@ -44,11 +49,25 @@ const $ = (id) => document.getElementById(id);
 function toast(message, kind = "info", action) {
   // When CachyPlay itself fails, offer the one useful next step.
   if (kind === "error" && !action) action = { label: "Report", run: () => openReport({ appId: state.selected, problem: message }) };
+  const box = $("toasts");
+  placeToasts();
+  // An older message's button (Undo, Close Steam) belongs to a moment that has passed.
+  for (const old of box.querySelectorAll(".toast")) {
+    if (old.querySelector("button")) old.remove();
+  }
+  while (box.children.length >= 3) box.firstElementChild.remove();
   const t = h("div", { class: `toast ${kind}` }, h("p", {}, message));
-  if (action) t.append(h("button", { class: "secondary", onclick: action.run }, action.label));
-  $("toasts").append(t);
+  if (action) t.append(h("button", { class: "secondary", onclick: () => { t.remove(); action.run(); } }, action.label));
+  box.append(t);
   setTimeout(() => t.remove(), action ? 12000 : 6000);
   return t;
+}
+
+/* Messages show above an open dialog (a dialog covers everything outside itself). */
+function placeToasts() {
+  const open = [...document.querySelectorAll("dialog[open]")].pop();
+  const host = open || document.body;
+  if ($("toasts").parentElement !== host) host.append($("toasts"));
 }
 /* ---------- loading ---------- */
 state.tab = "overview";
@@ -61,15 +80,13 @@ async function load() {
   try {
     state.overview = await invoke("overview");
   } catch (e) {
-    state.overview = { version: "", games: [], steam: null, steam_error: String(e), installed_cli: null, system_crashes: null };
+    state.overview = { version: "", games: [], steam: null, steam_error: String(e), installed_cli: null, system_crashes: null, system: {} };
   }
   renderChrome();
   renderRail();
   const games = state.overview.games;
-  if (!state.selected || !games.some((g) => g.app_id === state.selected)) {
-    const first = [...games].filter(needsAttention).sort((a, b) => b.gpu_crashes - a.gpu_crashes)[0] || games[0];
-    state.selected = first ? first.app_id : null;
-  }
+  // The window opens on the library home; a game opens when you pick it.
+  if (state.selected && !games.some((g) => g.app_id === state.selected)) state.selected = null;
   if (state.selected) showGame(state.selected, { keepScroll: true });
   else renderEmptyMain();
 }
@@ -80,18 +97,19 @@ function editBlocked() {
   return o.steam.blocked_reason;
 }
 
-const needsAttention = (g) => g.light === "red" || ((g.gpu_crashes > 0 || g.last_failed) && g.light !== "yellow");
+// Old crashes don't put a game that now works (green) or is testing a fix (amber) back on top.
+const needsAttention = (g) => g.light === "red" || ((g.gpu_crashes > 0 || g.last_failed) && !["yellow", "green"].includes(g.light));
 
 function times(n) {
   return n === 1 ? "once" : `${n} times`;
 }
 
-const LIGHT_TEXT = { green: "Runs fine", yellow: "Works with a fix", red: "Not working", grey: "Not played lately" };
+const LIGHT_TEXT = { green: "Runs fine", yellow: "Trying a fix", red: "Not working", grey: "Not played lately" };
 
 function statusText(g) {
   if (g.waiting) return "Waiting for Steam to close";
   if (g.stage && g.stage !== "Not working") return g.stage;
-  if (g.light === "yellow") return g.gpu_crashes > 0 ? "Trying a fix" : "Works with a fix";
+  if (g.light === "yellow") return "Trying a fix";
   if (g.gpu_crashes > 0) return `Crashed ${times(g.gpu_crashes)}`;
   if (g.light === "red") return "Not working";
   if (g.light === "green" || g.light === "yellow") return LIGHT_TEXT[g.light];
@@ -102,6 +120,12 @@ function statusText(g) {
 function renderChrome() {
   const o = state.overview;
   $("version").textContent = o.version ? `v${o.version}` : "";
+  // Driver and kernel, so it's clear what a crash happened on (the full picture is on Library).
+  const sys = o.system || {};
+  const sysBits = [sys.driver, sys.kernel ? `Kernel ${sys.kernel}` : null].filter(Boolean);
+  $("sys-chip").hidden = !sysBits.length;
+  $("sys-chip").replaceChildren(icon("monitor", 14), h("span", {}, sysBits.join(" · ")));
+  $("sys-chip").title = [sys.gpu, sys.driver, sys.kernel ? `Linux ${sys.kernel}` : null, sys.distro].filter(Boolean).join(", ");
   const chip = $("steam-chip");
   // Green: Steam is open and CachyPlay can read it. Grey: closed (nothing wrong; every change can
   // be made now). Amber: closing, or changes are waiting for it to close. Red: Steam not found.
@@ -160,12 +184,19 @@ function banners() {
       h("button", { class: "secondary", onclick: () => { const c = state.lastCrash; dismissCrash(); openReport({ problem: "CachyPlay closed unexpectedly." + (c && c.details ? "" : " (No crash trace: it may have been closed by the system.)") }); } }, "Report"),
       h("button", { class: "secondary", onclick: dismissCrash }, "Dismiss")));
   }
+  // Games that work again don't count any more; with fewer than two left there's no pattern.
   const sc = o.system_crashes;
-  if (sc) {
+  const fixed = new Set(o.games.filter((g) => g.light === "green").map((g) => g.name));
+  const still = sc ? sc.programs.filter((n) => !fixed.has(n)) : [];
+  const scKey = sc ? `${sc.crashes}:${still.join("|")}` : "";
+  if (sc && still.length >= 2 && state.dismissedSystem !== scKey) {
     out.push(h("div", { class: "banner warn system" },
       h("p", {},
-        h("strong", {}, `${sc.crashes} graphics driver crashes in ${sc.programs.length} different games`),
-        `${sc.programs.join(", ")}. When several games crash the same way, the cause is usually the driver or an add-on every game loads, not the games.`)));
+        h("strong", {}, still.length === sc.programs.length
+          ? `${sc.crashes} graphics driver crashes in ${still.length} different games`
+          : `Graphics driver crashes in ${still.length} different games`),
+        `${still.join(", ")}. When several games crash the same way, the cause is usually the driver or an add-on every game loads, not the games.`),
+      h("button", { class: "secondary", title: "Hide this until something changes", onclick: () => { state.dismissedSystem = scKey; redrawBanners(); } }, "Dismiss")));
   }
   // Every banner leads with its status icon, so an amber warning never reads as the accent.
   for (const b of out) {

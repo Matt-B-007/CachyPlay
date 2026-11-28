@@ -58,8 +58,8 @@ pub fn rating(paths: &Paths, app_id: &str) -> Option<Rating> {
     }
     let cached: Option<Rating> = read_json(&cache_path(paths, app_id));
     if let Some(r) = &cached {
-        let fresh = chrono::DateTime::parse_from_rfc3339(&r.fetched_at).is_ok_and(|t| {
-            chrono::Local::now().signed_duration_since(t) < chrono::Duration::days(CACHE_DAYS)
+        let fresh = crate::clock::instant(&r.fetched_at).is_some_and(|t| {
+            crate::clock::now_instant().duration_since(t) < crate::clock::days(CACHE_DAYS)
         });
         if fresh {
             return cached;
@@ -84,7 +84,7 @@ pub fn rating(paths: &Paths, app_id: &str) -> Option<Rating> {
         tier,
         trending,
         reports,
-        fetched_at: chrono::Local::now().to_rfc3339(),
+        fetched_at: crate::clock::now_rfc3339(),
     };
     let _ = write_json(&cache_path(paths, app_id), &r);
     Some(r)

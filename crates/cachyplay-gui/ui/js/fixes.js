@@ -38,7 +38,7 @@ function suggestionBody(appId, s) {
   }
   if (s.fix) {
     const tech = [...Object.entries(s.fix.env).map(([k, v]) => `${k}=${v}`), ...s.fix.args].join(" ");
-    out.push(h("details", { class: "tech-details" }, h("summary", {}, "Show the technical setting"), h("code", { class: "tech" }, tech)));
+    out.push(h("details", { class: "tech-details" }, h("summary", {}, "Show the technical setting"), optionsCode(tech, "tech")));
     const item = ins && ins.applied.find((a) => a.id === s.fix.id);
     out.push(h("div", { class: "actions" }, item
       ? h("button", { class: "secondary", onclick: () => undoChange(appId, item) }, "Undo")
@@ -60,11 +60,20 @@ function fixesTab(d) {
       h("p", { class: "muted" }, "CachyPlay found no crashes or problems for this game."))];
   }
   const ins = insightsFor(d.summary.app_id);
+  const working = isWorking(d.summary.app_id);
+  const shown = working ? list.filter((s) => s.status !== "new") : list;
+  const spare = list.length - shown.length;
   return [
     appliedCard(d),
-    ins && ins.find_cause && ins.find_cause.steps.length ? findCauseCard(ins.find_cause) : null,
-    h("p", { class: "muted intro" }, "Worked out on your PC from crashes, logs and how your other games run, most likely first. Every fix can be undone. Labels: Likely (two or more clues agree), Possible (one clue), Long shot (a general fix)."),
-    h("ol", { class: "fix-list" }, list.map((s, i) => h("li", {},
+    working
+      ? card("calm", h("h2", {}, "Nothing to fix right now"),
+        h("p", { class: "muted" }, `${d.summary.name} works. ${spare ? `${spare} other ${spare === 1 ? "idea is" : "ideas are"} kept in case it breaks again.` : ""}`),
+        spare ? h("details", { class: "tech-details" }, h("summary", {}, "Show them anyway"),
+          h("ul", { class: "why" }, list.filter((s) => s.status === "new").map((s) => h("li", {}, s.title)))) : null)
+      : null,
+    !working && ins && ins.find_cause && ins.find_cause.steps.length ? findCauseCard(ins.find_cause) : null,
+    working ? null : h("p", { class: "muted intro" }, "Worked out on your PC from crashes, logs and how your other games run, most likely first. Every fix can be undone. Labels: Likely (two or more clues agree), Possible (one clue), Long shot (a general fix)."),
+    h("ol", { class: "fix-list" }, shown.map((s, i) => h("li", {},
       card((i === 0 && s.status === "new" ? "recommended " : "") + (s.big_step ? "big-step" : ""),
         h("div", { class: "fix-head" },
           h("span", { class: "num" }, String(i + 1)),
@@ -152,7 +161,9 @@ function settingsTab(d) {
       h("thead", {}, h("tr", {}, h("th", {}, "Setting"), h("th", {}, "Stock"), h("th", {}, "CachyPlay"))),
       h("tbody", {}, rows)),
     d.fix && !d.fix.tested ? h("p", { class: "note untested" }, "This game's fix file hasn't been tested on real hardware yet. It only uses general, low-risk settings.") : null,
-    !d.fix ? h("p", { class: "note" }, "No fix file for this game yet. CachyPlay still records each launch and helps with bug reports.") : null,
+    !d.fix ? h("p", { class: "note" }, d.changes.length > 1
+      ? "CachyPlay has no ready-made fix file for this game; what's listed above is what you applied yourself."
+      : "CachyPlay has no ready-made fix file for this game yet. It still records each start and helps with bug reports.") : null,
     d.fix && d.fix.notes ? h("p", { class: "note" }, d.fix.notes) : null)];
 
   if (d.graphics_card) out.push(cardCard(d));
@@ -161,9 +172,11 @@ function settingsTab(d) {
   if (d.standalone_launch_options) {
     out.push(card("keep",
       h("h2", { class: "card-title" }, "Keep these settings without CachyPlay"),
-      h("p", { class: "muted" }, "Paste this into the game's Launch options in Steam. Uninstalling with \"Keep the settings\" does this for you."),
+      h("p", { class: "muted" }, d.fix_home && !d.fix_home.in_steam
+        ? "\"Keep this fix in Steam\" on the Overview tab does this for you, with Undo. Or paste this into the game's Launch options in Steam yourself."
+        : "Paste this into the game's Launch options in Steam. Uninstalling with \"Keep the settings\" does this for you."),
       d.summary.enabled ? h("p", { class: "s-note warn" }, "Pasting this replaces CachyPlay's part of the launch options, so CachyPlay turns off for this game. To test settings and keep CachyPlay on, use \"Try these settings\" above.") : null,
-      h("code", { class: "kept-line" }, d.standalone_launch_options),
+      optionsCode(d.standalone_launch_options, "kept-line"),
       h("div", { class: "actions" }, h("button", { class: "secondary", onclick: () => copyText(d.standalone_launch_options) }, "Copy"))));
   }
 
@@ -285,7 +298,9 @@ function historyTab(d) {
       h("h2", { class: "card-title" }, "Graphics driver crashes"),
       h("ul", { class: "rows" }, d.crashes.map((c) => h("li", {}, h("span", { class: "when" }, c.when), h("span", {}, c.what))))));
   }
-  if (ins && ins.nvidia_report) {
+  // Posts for NVIDIA and the developer are for a game that's still broken.
+  const working = isWorking(d.summary.app_id);
+  if (ins && ins.nvidia_report && !working) {
     out.push(card("nvidia",
       h("h2", { class: "card-title" }, "Tell NVIDIA"),
       h("p", { class: "muted" }, "The same driver error keeps happening. Run sudo nvidia-bug-report.sh in a terminal, then post this on NVIDIA's Linux forum with nvidia-bug-report.log.gz and a CachyPlay bug report attached."),
@@ -294,7 +309,7 @@ function historyTab(d) {
         h("button", { class: "primary", onclick: () => openReport({ appId: d.summary.app_id, destination: "nvidia", description: ins.nvidia_report, summary: `${d.summary.name}: driver error (Xid) keeps happening` }) }, "Tell NVIDIA…"),
         h("button", { class: "secondary", onclick: () => copyText(ins.nvidia_report, "Copied. Paste it into your post.") }, "Copy text"))));
   }
-  if (ins && ins.developer_report) {
+  if (ins && ins.developer_report && !working) {
     out.push(card("dev",
       h("h2", { class: "card-title" }, "Tell the developer"),
       h("p", { class: "muted" }, "Developers fix what they can see. Copy this, post it in the game's Steam discussions (or the developer's Discord), and attach a bug report."),

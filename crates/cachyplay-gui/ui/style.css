@@ -37,7 +37,8 @@ code {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--muted);
-  word-break: break-all;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 
@@ -202,7 +203,7 @@ code {
 .eyebrow.good { color: var(--success); }
 .muted { color: var(--muted); font-size: 13.5px; }
 .intro { margin-bottom: -4px; }
-.overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+.overview { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 20px; align-items: start; }
 .stack { display: grid; gap: 20px; min-width: 0; }
 .why { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--muted); font-size: 13.5px; line-height: 1.45; }
 .steps { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13.5px; line-height: 1.45; }
@@ -317,7 +318,7 @@ dialog#confirm { width: min(440px, 92vw); }
 .check { display: flex; align-items: center; gap: var(--s2); color: var(--text); }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px var(--s4); margin: 0; font-size: 13px; }
 .facts dt { color: var(--muted); }
-.facts dd { margin: 0; word-break: break-all; }
+.facts dd { margin: 0; word-break: normal; overflow-wrap: break-word; min-width: 0; }
 
 /* ---------- updates & reports ---------- */
 .channels { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); width: 100%; }
@@ -458,9 +459,9 @@ dialog#confirm { width: min(440px, 92vw); }
 .command-row code { padding: 6px 8px; border-radius: 6px; background: var(--control); font-size: 12px; overflow-wrap: anywhere; }
 
 /* ---------- big-screen mode ---------- */
-body.big-screen { zoom: 1.35; }
+body.big-screen { zoom: 1.5; }
 body.big-screen :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-body.big-screen .rail { width: 340px; }
+body.big-screen .rail { width: 270px; }
 .fix-caption { align-self: center; color: var(--muted); font-size: 13px; }
 body.big-screen .hero { flex-wrap: wrap; } body.big-screen .switch-card { order: 3; }
 
@@ -633,3 +634,185 @@ dialog { max-height: 92vh; overflow-y: auto; }
 @media (prefers-reduced-motion: reduce) {
   .main-empty, .rail:empty { background-image: none; }
 }
+
+/* ---------- beta.20: top bar chips, game head, progress track ---------- */
+.brand-name { background: none; border: 0; padding: 0; color: var(--text); cursor: pointer; }
+.brand-name:hover { color: var(--accent); }
+.sys-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--border); font-size: 12.5px; color: var(--muted); white-space: nowrap;
+}
+.game-head { align-items: center; padding-top: 24px; }
+.game-head .hero-cover { width: 72px; height: 99px; }
+.game-head h1 { font-size: 28px; }
+.head-facts { color: var(--muted); font-size: 13.5px; }
+
+.track {
+  list-style: none; margin: 20px 32px 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--border); border-radius: var(--r-card); background: var(--card); overflow: hidden;
+}
+.track li { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-right: 1px solid var(--border); min-width: 0; }
+.track li:last-child { border-right: 0; }
+.track-num {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; font-weight: 800; border: 1px solid var(--border); color: var(--muted); background: var(--control);
+}
+.track-text { display: grid; gap: 2px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+.track-text strong { font-size: 13.5px; color: var(--text); }
+.track-text span { overflow-wrap: break-word; }
+.track li.done .track-num { background: color-mix(in srgb, var(--success) 18%, var(--control)); border-color: var(--success); color: var(--success); }
+.track li.now { background: color-mix(in srgb, var(--accent) 8%, var(--card)); box-shadow: inset 0 -2px 0 var(--accent); }
+.track li.now .track-num { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* ---------- mission brief ---------- */
+.brief-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.brief-block { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.brief-block p { font-size: 14.5px; line-height: 1.5; }
+.brief-label { font-size: 12.5px !important; font-weight: 700; color: var(--muted); }
+.brief-what { font-weight: 600; }
+.todo-block .brief-label { color: var(--accent); }
+.card.brief.works { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); }
+.card.brief.works .todo-block .brief-label { color: var(--success); }
+.where { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13.5px; }
+.where li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: var(--r-control); background: var(--control); }
+.where-on, .where-off { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; white-space: nowrap; }
+.where-on { color: var(--success); }
+.where-off { color: var(--muted); }
+
+/* ---------- recent starts chart ---------- */
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.chart-scroll { overflow-x: auto; }
+.starts-chart { display: block; }
+.starts-chart .bar { cursor: pointer; outline: none; }
+.starts-chart .bar rect { stroke-width: 2; }
+.starts-chart .bar:focus-visible rect, .starts-chart .bar:hover rect { stroke: var(--text); }
+.bar-good rect, .key.bar-good { fill: var(--success); background: var(--success); }
+.bar-bad rect, .key.bar-bad { fill: var(--error); background: var(--error); }
+.bar-warn rect { fill: var(--warning); }
+.bar-live rect { fill: var(--accent); }
+.bar-muted rect { fill: var(--muted); }
+.bar-off rect { fill: transparent; }
+.bar-good.bar-off rect { stroke: var(--success); }
+.bar-bad.bar-off rect { stroke: var(--error); }
+.bar-warn.bar-off rect { stroke: var(--warning); }
+.bar-muted.bar-off rect { stroke: var(--muted); }
+.key.bar-off { background: transparent; border: 2px solid var(--success); }
+.bar-day { fill: var(--muted); font-size: 11px; font-family: var(--font); }
+.mark line { stroke: var(--accent); stroke-dasharray: 3 3; }
+.mark path { fill: var(--accent); }
+.mark-driver line { stroke: var(--warning); }
+.mark-driver path { fill: var(--warning); }
+.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; }
+.legend li { display: inline-flex; align-items: center; gap: 6px; }
+.key { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.key.mark-key { width: 0; height: 0; border-radius: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 8px solid var(--accent); }
+
+/* ---------- Up next / Ruled out ---------- */
+.next-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.next-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: var(--r-control); background: var(--control); }
+.next-text { display: grid; gap: 2px; min-width: 0; font-size: 13.5px; }
+.next-text .muted { font-size: 12.5px; }
+.secondary.small { padding: 5px 12px; font-size: 13px; }
+.card-title .count { margin-left: 4px; padding: 1px 7px; border-radius: 999px; background: var(--border); font-size: 12px; }
+
+/* ---------- game list groups ---------- */
+.rail-home { margin-bottom: 4px; }
+.home-thumb { color: var(--accent); }
+.rail-title { display: flex; align-items: center; gap: 6px; }
+.rail-title.testing { color: var(--warning); }
+.rail-title.working { color: var(--success); }
+.rail-count { font-weight: 600; color: var(--muted); }
+
+/* ---------- library home ---------- */
+.home { padding: 24px 32px 0; display: grid; gap: 28px; }
+.home-head h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
+.home-section { display: grid; gap: 12px; }
+.home-title { font-size: 15px; font-weight: 700; }
+.home-title.attention { color: var(--error); }
+.home-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.needs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.needs-card { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 14px; }
+.needs-card.light-red { border-color: color-mix(in srgb, var(--error) 40%, var(--border)); }
+.needs-card.light-yellow { border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
+.needs-text { display: grid; gap: 3px; min-width: 0; }
+.needs-text p { font-size: 13px; }
+.big-thumb { width: 48px; height: 66px; }
+.sys-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.sys-card { gap: 4px; padding: 14px 16px; }
+.sys-title { font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.sys-value { font-size: 16px; overflow-wrap: break-word; }
+.sys-detail { color: var(--muted); font-size: 12.5px; }
+.sys-card.good .sys-value { color: var(--success); }
+.sys-card.warn .sys-value { color: var(--warning); }
+.sys-card.bad .sys-value { color: var(--error); }
+.sys-card.info .sys-value { color: var(--accent); }
+.filter-tabs { display: flex; gap: 4px; padding: 3px; border-radius: var(--r-control); background: var(--card); border: 1px solid var(--border); }
+.filter-tabs button { background: none; border: 0; border-radius: 6px; padding: 5px 12px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.filter-tabs button[aria-selected="true"] { background: var(--control); color: var(--text); }
+.tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+.tile { display: grid; gap: 6px; padding: 8px; border-radius: var(--r-card); background: var(--card); border: 1px solid var(--border); text-align: left; min-width: 0; }
+.tile:hover, .tile:focus-visible { border-color: var(--accent); }
+.tile-cover {
+  aspect-ratio: 2 / 3; border-radius: var(--r-control); overflow: hidden; background: var(--control);
+  display: grid; place-items: center; font-weight: 800; color: var(--muted);
+}
+.tile-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile-name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- big-screen mode: the couch view ---------- */
+.pad-hints { display: none; }
+body.big-screen .pad-hints {
+  display: flex; gap: 24px; justify-content: center; flex: none; padding: 8px 16px;
+  border-top: 1px solid var(--border); background: var(--sidebar); color: var(--muted); font-size: 13px;
+}
+body.big-screen .pad-hints span { display: inline-flex; align-items: center; gap: 6px; }
+kbd.pad { border-radius: 999px; min-width: 22px; text-align: center; color: var(--text); }
+body.big-screen .search, body.big-screen .kbd-hint { display: none; }
+body.big-screen .tile-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+body.big-screen .track { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+body.big-screen .brief-grid { grid-template-columns: 1fr; }
+
+@media (max-width: 1100px) {
+  .brief-grid { grid-template-columns: 1fr; }
+  .track { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sys-chip { display: none; }
+}
+
+/* ---------- beta.21: fixes from testing beta.20 ---------- */
+/* Status chips never spill out of their pill, and the header wraps instead of squeezing. */
+.light-chip { white-space: nowrap; gap: 6px; }
+.game-head { flex-wrap: wrap; }
+.game-head .hero-text { flex: 1 1 320px; }
+.switch-label { max-width: 230px; }
+.switch-label span { overflow-wrap: break-word; }
+/* Big-screen: cover and name on one row, the switch on its own row below. */
+body.big-screen .game-head { gap: 16px; }
+body.big-screen .game-head .hero-text { flex: 1 1 260px; }
+body.big-screen .game-head .switch-card { order: 3; flex: 1 1 100%; justify-content: space-between; }
+body.big-screen .switch-label { max-width: none; }
+body.big-screen .needs-grid { grid-template-columns: 1fr; }
+/* The controller hints stay at the bottom, also over Settings. */
+.pad-hints { order: 99; }
+/* 2 × 2 progress track: a line between the rows too. */
+@media (max-width: 1100px) {
+  .track li:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .track li:nth-child(2n) { border-right: 0; }
+}
+body.big-screen .track li:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+body.big-screen .track li:nth-child(2n) { border-right: 0; }
+/* Library: status text in the status colour, on one line. */
+.tile.light-red .rail-status, .needs-card.light-red .rail-status { color: var(--error); }
+.tile.light-green .rail-status, .needs-card.light-green .rail-status { color: var(--success); }
+.tile.light-yellow .rail-status, .needs-card.light-yellow .rail-status { color: var(--warning); }
+.tile .rail-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home-title.testing { color: var(--warning); }
+/* One launch option is one unbreakable word ("-nosplash" never wraps after its hyphen); only a
+   word longer than the line breaks. */
+.tok { display: inline-block; max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
+/* Chart: the whole column is the click target; keys for every colour used. */
+.starts-chart .bar rect.hit { fill: transparent; stroke: none; }
+.starts-chart .bar:hover rect.hit, .starts-chart .bar:focus-visible rect.hit { fill: var(--grid-dot); stroke: none; }
+.key.bar-warn { background: var(--warning); }
+.key.mark-key.driver { border-top-color: var(--warning); }
+/* Messages sit above an open dialog. */
+dialog .toasts { position: fixed; }

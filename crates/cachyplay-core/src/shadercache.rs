@@ -36,7 +36,8 @@ fn game_running(ctx: &Ctx, game: &Game) -> bool {
         .any(|s| {
             s.app_id == game.app_id
                 && s.end.is_none()
-                && chrono::Local::now().naive_local() - s.start < chrono::Duration::hours(12)
+                && crate::clock::between(s.start, crate::clock::now_local())
+                    < crate::clock::hours(12)
         })
 }
 

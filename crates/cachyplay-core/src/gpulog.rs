@@ -4,8 +4,8 @@
 //! anything in a terminal. NVIDIA through `nvidia-smi`, AMD through the kernel's sensor files.
 //! Best effort: if neither is available, nothing is recorded and the game isn't affected.
 
+use crate::clock::DateTime;
 use crate::paths::Paths;
-use chrono::NaiveDateTime;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -138,7 +138,7 @@ pub fn start(paths: &Paths, app_id: &str, started_at: &str) -> Option<Recorder> 
                 }
                 let line = format!(
                     "{}, {:.0}, {:.2} W, {:.0} MHz, {:.0} MHz\n",
-                    chrono::Local::now().format(TS),
+                    crate::clock::now().strftime(TS),
                     num("temp1_input").unwrap_or(0.0) / 1000.0,
                     num("power1_average")
                         .or_else(|| num("power1_input"))
@@ -157,7 +157,7 @@ pub fn start(paths: &Paths, app_id: &str, started_at: &str) -> Option<Recorder> 
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sample {
-    pub at: NaiveDateTime,
+    pub at: DateTime,
     pub temp: f64,
     pub watts: f64,
     pub clock: f64,
@@ -167,7 +167,7 @@ pub fn parse(text: &str) -> Vec<Sample> {
     text.lines()
         .filter_map(|l| {
             let c: Vec<&str> = l.split(',').map(str::trim).collect();
-            let at = NaiveDateTime::parse_from_str(c.first()?, TS).ok()?;
+            let at = crate::clock::parse(c.first()?, TS)?;
             let n = |s: &str| s.split_whitespace().next()?.parse::<f64>().ok();
             Some(Sample {
                 at,
@@ -198,7 +198,7 @@ pub fn latest(paths: &Paths, app_id: &str) -> Option<(PathBuf, String)> {
 }
 
 /// One plain sentence about the card, ideally around a crash.
-pub fn describe(samples: &[Sample], crash_at: Option<NaiveDateTime>) -> Option<String> {
+pub fn describe(samples: &[Sample], crash_at: Option<DateTime>) -> Option<String> {
     let s: Vec<&Sample> = samples
         .iter()
         .filter(|x| x.watts > 0.0 || x.temp > 0.0)
@@ -213,7 +213,7 @@ pub fn describe(samples: &[Sample], crash_at: Option<NaiveDateTime>) -> Option<S
     if let Some(c) = crash_at {
         let before: Vec<&&Sample> = s
             .iter()
-            .filter(|x| x.at <= c && x.at >= c - chrono::Duration::seconds(30))
+            .filter(|x| x.at <= c && x.at >= c - crate::clock::secs(30))
             .collect();
         if let (Some(first), Some(last)) = (before.first(), before.last()) {
             let hot = before.iter().any(|x| x.temp >= 85.0);
@@ -238,10 +238,7 @@ pub fn describe(samples: &[Sample], crash_at: Option<NaiveDateTime>) -> Option<S
 }
 
 /// The newest MangoHud recording written after `since` ("Record performance").
-pub fn latest_performance(
-    paths: &Paths,
-    since: Option<NaiveDateTime>,
-) -> Option<(PathBuf, String)> {
+pub fn latest_performance(paths: &Paths, since: Option<DateTime>) -> Option<(PathBuf, String)> {
     let mut files: Vec<(std::time::SystemTime, PathBuf)> =
         fs::read_dir(paths.state.join("performance"))
             .into_iter()
@@ -252,7 +249,7 @@ pub fn latest_performance(
             .collect();
     files.sort();
     let (t, p) = files.pop()?;
-    let written = chrono::DateTime::<chrono::Local>::from(t).naive_local();
+    let written = crate::clock::from_system(t)?;
     if since.is_some_and(|s| written < s) {
         return None;
     }
@@ -325,8 +322,7 @@ mod tests {
     fn reads_the_log_from_halo_and_explains_it() {
         let s = parse(MATT);
         assert_eq!(s.len(), 8);
-        let crash =
-            NaiveDateTime::parse_from_str("2026-11-25 17:29:29", "%Y-%m-%d %H:%M:%S").unwrap();
+        let crash = crate::clock::parse("2026-11-25 17:29:29", "%Y-%m-%d %H:%M:%S").unwrap();
         let d = describe(&s, Some(crash)).unwrap();
         assert!(d.contains("at most 58 °C and 247 W"), "{d}");
         assert!(d.contains("waiting on stuck work"), "{d}");

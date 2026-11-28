@@ -117,6 +117,10 @@ function startGamepad() {
         right: pressed(15) || axisX > 0.6,
         a: pressed(0),
         b: pressed(1),
+        x: pressed(2),
+        y: pressed(3),
+        lb: pressed(4),
+        rb: pressed(5),
       };
       for (const [k, on] of Object.entries(inputs)) {
         const was = padState[k];
@@ -138,7 +142,19 @@ function padPress(k) {
   if (k === "a") { if (el && el !== document.body) el.click(); return; }
   if (k === "b") {
     if (!$("settings").hidden) closeSettings();
-    else for (const d of document.querySelectorAll("dialog[open]")) d.close();
+    else if (document.querySelector("dialog[open]")) for (const d of document.querySelectorAll("dialog[open]")) d.close();
+    else if (state.selected) goHome();
+    return;
+  }
+  // X: Library. Y: report a problem. LB/RB: previous/next game in the list.
+  if (k === "x") { closeSettings(); goHome(); return; }
+  if (k === "y") { openReport(state.selected ? { appId: state.selected } : {}); return; }
+  if (k === "lb" || k === "rb") {
+    const ids = [...document.querySelectorAll("#rail .rail-item[data-app]")].map((b) => b.dataset.app);
+    if (!ids.length) return;
+    const i = ids.indexOf(state.selected);
+    const next = ids[i < 0 ? 0 : (i + (k === "rb" ? 1 : ids.length - 1)) % ids.length];
+    openGame(next);
     return;
   }
   const list = focusables();
@@ -227,7 +243,7 @@ async function renderKept() {
     h("div", { class: "kept-head" },
       h("strong", {}, g.name),
       h("button", { type: "button", class: "secondary small", onclick: () => copyText(g.launch_options) }, "Copy")),
-    h("code", { class: "kept-line" }, g.launch_options),
+    optionsCode(g.launch_options, "kept-line"),
     h("ul", { class: "kept-settings" }, g.settings.map((st) => h("li", {},
       `${st.label} (${st.source})`,
       h("span", {}, st.why)))))));

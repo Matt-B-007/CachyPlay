@@ -484,7 +484,7 @@ fn halo_nov27(switched: bool) -> Evidence {
 
 #[test]
 fn driver_history_is_judged_from_the_first_crash() {
-    let up = |at: NaiveDateTime, p: &str, from: &str, to: &str| crate::evidence::DriverUpdate {
+    let up = |at: DateTime, p: &str, from: &str, to: &str| crate::evidence::DriverUpdate {
         at,
         package: p.into(),
         from: from.into(),

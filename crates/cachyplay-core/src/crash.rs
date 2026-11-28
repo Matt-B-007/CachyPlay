@@ -122,7 +122,7 @@ fn newest_trace(paths: &Paths) -> Option<(PathBuf, std::time::SystemTime)> {
 pub fn write_trace(paths: &Paths, text: &str) -> Option<PathBuf> {
     let dir = crash_dir(paths);
     fs::create_dir_all(&dir).ok()?;
-    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S%.3f");
+    let stamp = crate::clock::stamp_ms();
     let file = dir.join(format!("crash-{stamp}.txt"));
     atomic_write(&file, text.as_bytes()).ok()?;
     let mut all: Vec<PathBuf> = fs::read_dir(&dir)

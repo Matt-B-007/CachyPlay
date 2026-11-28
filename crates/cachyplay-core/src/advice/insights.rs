@@ -75,10 +75,7 @@ pub(crate) fn nvidia_switch_helped(ctx: &crate::manage::Ctx, events: &[CrashEven
         else {
             continue;
         };
-        let Some(on) = chrono::DateTime::parse_from_rfc3339(&f.applied_at)
-            .ok()
-            .map(|d| d.naive_local())
-        else {
+        let Some(on) = crate::clock::wall(&f.applied_at) else {
             continue;
         };
         let played = launches
@@ -115,7 +112,7 @@ pub(crate) fn worked_elsewhere(
 ) -> Vec<(String, String, String)> {
     let paths = &ctx.paths;
     let launches = crate::evidence::all_launches(paths);
-    let now = chrono::Local::now().naive_local();
+    let now = crate::clock::now_local();
     let events =
         crate::evidence::crash_events(paths, Some(ctx), &crate::evidence::kernel_logs(), now);
     let hangs = |app: &str| {
@@ -211,11 +208,7 @@ pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights
             let _ = crate::tries::rule_out(&ctx.paths, &game.app_id, &s.id, &s.title, &why);
         }
     }
-    let parse = |t: &str| {
-        chrono::DateTime::parse_from_rfc3339(t)
-            .ok()
-            .map(|d| d.naive_local())
-    };
+    let parse = |t: &str| crate::clock::wall(t);
     let mut applied: Vec<AppliedItem> = ev
         .fixes
         .fixes
@@ -229,7 +222,7 @@ pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights
             id: f.id.clone(),
             label: f.label.clone(),
             since: parse(&f.applied_at)
-                .map(|d| d.format("%b %-d %H:%M").to_string())
+                .map(|d| d.strftime("%b %-d %H:%M").to_string())
                 .unwrap_or_default(),
             worse: suggestions
                 .iter()
@@ -247,7 +240,7 @@ pub fn insights(ctx: &crate::manage::Ctx, game: &crate::steam::Game) -> Insights
             label: format!("Switch to {}", crate::compat::friendly(tool)),
             since: ev
                 .switched_at
-                .map(|d| d.format("%b %-d %H:%M").to_string())
+                .map(|d| d.strftime("%b %-d %H:%M").to_string())
                 .unwrap_or_default(),
             worse: None,
             temporary: false,

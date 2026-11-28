@@ -198,6 +198,31 @@ fn live_status() -> CmdResult<Live> {
     })
 }
 
+/// "Keep this fix in Steam": write the fix into Steam's launch options, CachyPlay off for the game.
+#[tauri::command(async)]
+fn keep_in_steam(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = c
+        .steam
+        .find_game(&app_id)
+        .ok_or_else(|| format!("Game {app_id} is not installed"))?;
+    let _ = cachyplay_core::live::cancel(&p, &app_id);
+    cachyplay_core::keep::keep_in_steam_here(&c, &g).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command(async)]
+fn undo_keep_in_steam(app_id: String) -> CmdResult<String> {
+    let p = paths()?;
+    let c = ctx(&p)?;
+    let g = c
+        .steam
+        .find_game(&app_id)
+        .ok_or_else(|| format!("Game {app_id} is not installed"))?;
+    let _ = cachyplay_core::live::cancel(&p, &app_id);
+    cachyplay_core::keep::undo_keep_in_steam(&c, &g).map_err(|e| format!("{e:#}"))
+}
+
 /// Save a change to run once Steam closes.
 #[tauri::command(async)]
 fn queue_action(action: cachyplay_core::live::Action) -> CmdResult<String> {
@@ -320,6 +345,19 @@ fn set_enabled(app_id: String, enabled: bool) -> CmdResult<String> {
         }
     } else {
         Ok(match c.undo(&app_id).map_err(|e| format!("{e:#}"))? {
+            Outcome::Restored
+                if cachyplay_core::keep::kept_in_steam(&p, &app_id).is_some_and(|k| {
+                    c.launch_options(&app_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|o| o.trim() == k.after.trim())
+                }) =>
+            {
+                format!(
+                    "CachyPlay is off for {}. The fix stays in Steam's launch options.",
+                    g.name
+                )
+            }
             Outcome::Restored => format!(
                 "CachyPlay is off for {}. Original launch options restored.",
                 g.name
@@ -1185,13 +1223,14 @@ fn log_ui_error(message: String) {
 }
 
 /// The window's files, all built into the program (checked by `--self-test --quick`).
-const WINDOW_FILES: [&str; 14] = [
+const WINDOW_FILES: [&str; 15] = [
     "index.html",
     "tokens.css",
     "style.css",
     "js/core.js",
     "js/rail.js",
     "js/game.js",
+    "js/home.js",
     "js/fixes.js",
     "js/actions.js",
     "js/live.js",
@@ -1204,10 +1243,11 @@ const WINDOW_FILES: [&str; 14] = [
 
 /// The window's scripts (ui/js), in the order index.html loads them, for the tests.
 #[cfg(test)]
-const SCRIPTS: [(&str, &str); 11] = [
+const SCRIPTS: [(&str, &str); 12] = [
     ("js/core.js", include_str!("../ui/js/core.js")),
     ("js/rail.js", include_str!("../ui/js/rail.js")),
     ("js/game.js", include_str!("../ui/js/game.js")),
+    ("js/home.js", include_str!("../ui/js/home.js")),
     ("js/fixes.js", include_str!("../ui/js/fixes.js")),
     ("js/actions.js", include_str!("../ui/js/actions.js")),
     ("js/live.js", include_str!("../ui/js/live.js")),
@@ -1359,6 +1399,8 @@ fn main() {
             set_prefer_card,
             live_status,
             queue_action,
+            keep_in_steam,
+            undo_keep_in_steam,
             cancel_waiting,
             run_waiting,
             close_steam,

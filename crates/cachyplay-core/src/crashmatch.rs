@@ -8,15 +8,15 @@
 //! turned on for it. When several different programs hit GPU faults, that points to the driver or
 //! the system rather than one broken game.
 
+use crate::clock::DateTime;
 use crate::wrapper::LaunchRecord;
-use chrono::{Datelike, Local, NaiveDate, NaiveDateTime};
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GpuFault {
-    pub at: NaiveDateTime,
+    pub at: DateTime,
     pub vendor: &'static str,
     /// NVIDIA Xid code, if any.
     pub xid: Option<u32>,
@@ -29,14 +29,32 @@ pub struct GpuFault {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
     pub app_id: String,
-    pub start: NaiveDateTime,
-    pub end: Option<NaiveDateTime>,
+    pub start: DateTime,
+    pub end: Option<DateTime>,
     pub source: &'static str,
     /// The compatibility tool Steam started it with (folder name, e.g. "Proton - Experimental",
     /// "GE-Proton11-12-x86_64"), or None for a native game / unknown.
     pub tool: Option<String>,
     /// NAME=value settings from the launch options Steam used (CachyPlay's own aren't here).
     pub settings: Vec<String>,
+    /// The game's own options in Steam's launch command, like `-dx12` (CachyPlay's own aren't here).
+    pub args: Vec<String>,
+}
+
+/// The game's own options (`-dx12`, `-force-d3d12`) in Steam's launch command. Steam's helpers use
+/// `--` options, which are left out.
+pub fn args_in_command(line: &str) -> Vec<String> {
+    let Some(cmd) = line
+        .split_once("AppID ")
+        .and_then(|(_, r)| r.split_once('"'))
+        .map(|(_, c)| c.split('"').next().unwrap_or(""))
+    else {
+        return vec![];
+    };
+    cmd.split_whitespace()
+        .filter(|t| t.len() > 1 && t.starts_with('-') && !t.starts_with("--"))
+        .map(str::to_string)
+        .collect()
 }
 
 /// NAME=value words at the start of Steam's launch command, before the first program path.
@@ -67,8 +85,8 @@ pub fn settings_in_command(line: &str) -> Vec<String> {
 
 impl Session {
     /// How long it ran, if it has ended.
-    pub fn duration(&self) -> Option<chrono::Duration> {
-        self.end.map(|e| e - self.start)
+    pub fn duration(&self) -> Option<crate::clock::SignedDuration> {
+        self.end.map(|e| crate::clock::between(self.start, e))
     }
 }
 
@@ -83,7 +101,7 @@ pub fn tool_in_command(line: &str) -> Option<String> {
 
 #[derive(Debug, Clone)]
 pub struct CrashEvent {
-    pub at: NaiveDateTime,
+    pub at: DateTime,
     pub app_id: Option<String>,
     pub faults: Vec<GpuFault>,
 }
@@ -107,30 +125,30 @@ fn re(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
 
 /// Parse a journal line's timestamp: `2026-11-23T18:34:54-08:00 …` (short-iso)
 /// or `Nov 23 18:34:54 …` (short; the year is taken from `now`).
-fn line_time(line: &str, now: NaiveDateTime) -> Option<NaiveDateTime> {
+fn line_time(line: &str, now: DateTime) -> Option<DateTime> {
     let first = line.split_whitespace().next()?;
     if first.len() >= 19 && first.as_bytes().get(4) == Some(&b'-') {
-        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(first) {
-            return Some(dt.naive_local());
+        if let Some(dt) = crate::clock::wall(first) {
+            return Some(dt);
         }
-        if let Ok(dt) = chrono::DateTime::parse_from_str(first, "%Y-%m-%dT%H:%M:%S%z") {
-            return Some(dt.naive_local());
+        if let Some(dt) = crate::clock::wall_numeric_offset(first) {
+            return Some(dt);
         }
     }
     let mut it = line.split_whitespace();
     let (mon, day, time) = (it.next()?, it.next()?, it.next()?);
     let s = format!("{} {mon} {day} {time}", now.year());
-    let t = NaiveDateTime::parse_from_str(&s, "%Y %b %d %H:%M:%S").ok()?;
+    let t = crate::clock::parse(&s, "%Y %b %d %H:%M:%S")?;
     // A December log read in January belongs to last year.
-    Some(if t > now + chrono::Duration::days(1) {
-        t.with_year(t.year() - 1).unwrap_or(t)
+    Some(if t > now + crate::clock::days(1) {
+        t.with().year(t.year() - 1).build().unwrap_or(t)
     } else {
         t
     })
 }
 
 /// GPU driver faults in kernel log text.
-pub fn parse_kernel_faults(text: &str, now: NaiveDateTime) -> Vec<GpuFault> {
+pub fn parse_kernel_faults(text: &str, now: DateTime) -> Vec<GpuFault> {
     static XID: OnceLock<Regex> = OnceLock::new();
     static PID: OnceLock<Regex> = OnceLock::new();
     static NAME: OnceLock<Regex> = OnceLock::new();
@@ -188,7 +206,7 @@ pub fn parse_steam_sessions(text: &str) -> Vec<Session> {
         let Some(c) = line_re.captures(line.trim()) else {
             continue;
         };
-        let Ok(at) = NaiveDateTime::parse_from_str(&c[1], "%Y-%m-%d %H:%M:%S") else {
+        let Some(at) = crate::clock::parse(&c[1], "%Y-%m-%d %H:%M:%S") else {
             continue;
         };
         let app = c[3].to_string();
@@ -202,6 +220,7 @@ pub fn parse_steam_sessions(text: &str) -> Vec<Session> {
                         source: "Steam",
                         tool: tool_in_command(line),
                         settings: settings_in_command(line),
+                        args: args_in_command(line),
                     });
                 }
             }
@@ -225,11 +244,9 @@ pub fn sessions_from_launches(records: &[LaunchRecord]) -> Vec<Session> {
     records
         .iter()
         .filter_map(|r| {
-            let start = chrono::DateTime::parse_from_rfc3339(&r.started_at)
-                .ok()?
-                .naive_local();
+            let start = crate::clock::wall(&r.started_at)?;
             let end = (!r.running)
-                .then(|| start + chrono::Duration::milliseconds((r.runtime_secs * 1000.0) as i64));
+                .then(|| start + crate::clock::millis((r.runtime_secs * 1000.0) as i64));
             Some(Session {
                 app_id: r.app_id.clone(),
                 start,
@@ -237,6 +254,7 @@ pub fn sessions_from_launches(records: &[LaunchRecord]) -> Vec<Session> {
                 source: "CachyPlay",
                 tool: None,
                 settings: vec![],
+                args: vec![],
             })
         })
         .collect()
@@ -258,28 +276,22 @@ fn is_tool_app(app_id: &str) -> bool {
 }
 
 /// The session running at `at` (a small grace period covers the crash itself).
-pub fn session_at(sessions: &[Session], at: NaiveDateTime, now: NaiveDateTime) -> Option<&Session> {
-    let grace = chrono::Duration::seconds(90);
+pub fn session_at(sessions: &[Session], at: DateTime, now: DateTime) -> Option<&Session> {
+    let grace = crate::clock::secs(90);
     sessions
         .iter()
         .filter(|s| !is_tool_app(&s.app_id))
-        .filter(|s| {
-            s.start - chrono::Duration::seconds(5) <= at && at <= s.end.unwrap_or(now) + grace
-        })
+        .filter(|s| s.start - crate::clock::secs(5) <= at && at <= s.end.unwrap_or(now) + grace)
         .max_by_key(|s| s.start) // the most recently started game, if several overlap
 }
 
 /// Group faults into crash events (same process within a few minutes) and name each game.
-pub fn crash_events(
-    faults: &[GpuFault],
-    sessions: &[Session],
-    now: NaiveDateTime,
-) -> Vec<CrashEvent> {
+pub fn crash_events(faults: &[GpuFault], sessions: &[Session], now: DateTime) -> Vec<CrashEvent> {
     let mut events: Vec<CrashEvent> = Vec::new();
     for f in faults {
         let same = events.last_mut().filter(|e| {
             let last = e.faults.last().expect("non-empty");
-            let close = f.at - last.at <= chrono::Duration::minutes(3);
+            let close = crate::clock::between(last.at, f.at) <= crate::clock::mins(3);
             close && (f.pid.is_none() || last.pid.is_none() || f.pid == last.pid)
         });
         match same {
@@ -321,15 +333,19 @@ pub fn xid_meaning(xid: u32) -> &'static str {
     }
 }
 
-pub fn now_local() -> NaiveDateTime {
-    Local::now().naive_local()
+pub fn now_local() -> DateTime {
+    crate::clock::now_local()
 }
 
 /// For tests: a fixed local time.
-pub fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> NaiveDateTime {
-    NaiveDate::from_ymd_opt(y, mo, d)
-        .and_then(|x| x.and_hms_opt(h, mi, s))
-        .unwrap_or_default()
+pub fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime {
+    let part = |v: u32| i8::try_from(v).ok();
+    i16::try_from(y)
+        .ok()
+        .zip(part(mo).zip(part(d)))
+        .zip(part(h).zip(part(mi).zip(part(s))))
+        .and_then(|((y, (mo, d)), (h, (mi, s)))| DateTime::new(y, mo, d, h, mi, s, 0).ok())
+        .unwrap_or(crate::clock::at(1970, 1, 1, 0, 0, 0))
 }
 
 #[cfg(test)]
@@ -349,6 +365,15 @@ mod tests {
 [2026-11-23 18:36:00] Game process removed: AppID 5335510 \"…\", ProcID 235300
 [2026-11-23 18:37:15] Game process added : AppID 1240440 \"…\", ProcID 236800
 ";
+
+    #[test]
+    fn game_options_in_steams_command() {
+        let line = "[2026-11-26 20:00:00] Game process added : AppID 5335510 \"/home/x/.local/share/Steam/ubuntu12_32/reaper SteamLaunch AppId=5335510 -- /home/x/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point --verb=waitforexitandrun -- '/home/x/.local/share/Steam/compatibilitytools.d/proton-cachyos-slr'/proton waitforexitandrun /home/x/Moon/MoonSweepers.exe -dx12 -nosplash\", ProcID 4801, IP 0.0.0.0:0";
+        assert_eq!(args_in_command(line), vec!["-dx12", "-nosplash"]);
+        let s = &parse_steam_sessions(line)[0];
+        assert_eq!(s.args, vec!["-dx12", "-nosplash"]);
+        assert!(args_in_command(CONSOLE.lines().next().unwrap()).is_empty());
+    }
 
     #[test]
     fn real_log_faults_are_parsed_and_grouped() {

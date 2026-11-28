@@ -80,9 +80,9 @@ pub fn gather(
         game_name: game.name.clone(),
         game_updated: game
             .last_updated
-            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
             // Steam stores the time in UTC; everything else here is the PC's own clock.
-            .map(|t| t.with_timezone(&chrono::Local).naive_local()),
+            .and_then(crate::clock::from_unix)
+            .map(|t| t.datetime()),
         events,
         names,
         layers: vklayers::detect(&paths.home),
@@ -167,7 +167,7 @@ pub fn summary(ev: &Evidence, suggestions: &[Suggestion]) -> Summary {
     let trouble = history::trouble(&crashes);
     let game_crashes = ev.game_events().len();
     let last_launch = ev.launches.last();
-    let day = |t: NaiveDateTime| t.format("%b %-d").to_string();
+    let day = |t: DateTime| t.strftime("%b %-d").to_string();
 
     let worked_fix = suggestions
         .iter()
@@ -189,7 +189,7 @@ pub fn summary(ev: &Evidence, suggestions: &[Suggestion]) -> Summary {
                     "Answer \"Was that online?\" under History so the last start can count.".into()
                 }
                 _ if !ev.cachyplay_on && !prog.fix_label.as_deref().is_some_and(|l| l.starts_with("Switch to")) => {
-                    "Turn CachyPlay on for this game so the fix is used, then start the game from Steam.".into()
+                    "Turn on the CachyPlay switch for this game so the fix is used, then start the game from Steam.".into()
                 }
                 _ if asks => "Tell CachyPlay below whether it works now.".into(),
                 Stage::WorksWithFix => "Nothing to do. Keep the fix on.".into(),
@@ -286,7 +286,7 @@ pub fn summary(ev: &Evidence, suggestions: &[Suggestion]) -> Summary {
         (Light::Red, "The last start closed early.".into())
     } else if worked_fix {
         (
-            Light::Yellow,
+            Light::Green,
             "It works with a fix CachyPlay applied.".into(),
         )
     } else if crashes

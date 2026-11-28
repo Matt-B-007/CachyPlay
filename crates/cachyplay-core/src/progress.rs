@@ -12,10 +12,10 @@
 //! Every start in Steam's log counts, whether or not CachyPlay was on for it.
 
 use crate::advice::{Evidence, Light};
+use crate::clock::DateTime;
 use crate::crashmatch::Session;
 use crate::history::{self, Outcome};
 use crate::notes::RunNote;
-use chrono::{Duration, NaiveDateTime};
 use serde::Serialize;
 
 pub const MIN_CLEAN: i64 = 10 * 60;
@@ -48,7 +48,7 @@ pub struct Progress {
     /// The change being tested, if any.
     pub fix_label: Option<String>,
     #[serde(skip)]
-    pub changed_at: Option<NaiveDateTime>,
+    pub changed_at: Option<DateTime>,
     pub needed_secs: i64,
     /// "18 min without a crash (it used to crash within 3–9 min)"
     pub needed_text: String,
@@ -58,6 +58,9 @@ pub struct Progress {
     pub online_only: bool,
     /// Start time of the newest ended start that needs "Was that online?" answered.
     pub ask_online: Option<String>,
+    /// Set when the fix is something typed into Steam's own launch options (like `-dx12`) that
+    /// CachyPlay never applied: the options, as typed.
+    pub steam_fix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +77,8 @@ pub struct RunRow {
     /// Fixes and settings CachyPlay applied to this start (empty if CachyPlay was off).
     pub applied: Vec<String>,
     pub through_cachyplay: bool,
+    /// CachyPlay was off, but the fix being tested was in Steam's launch options.
+    pub fix_in_steam: bool,
     pub gpu: Option<String>,
     pub gpu_integrated: bool,
     /// "✓ clean run 1 of 3", "too short to count", "offline, doesn't count for this problem"
@@ -105,7 +110,7 @@ struct Start<'a> {
 
 impl Start<'_> {
     fn secs(&self) -> Option<i64> {
-        self.session.duration().map(|d| d.num_seconds().max(0))
+        self.session.duration().map(|d| d.as_secs().max(0))
     }
     fn bad(&self) -> bool {
         self.outcome == Outcome::Crashed || self.note.is_some_and(|n| n.graphics_problem())
@@ -123,10 +128,10 @@ fn starts<'a>(ev: &'a Evidence) -> Vec<Start<'a>> {
                 .iter()
                 .filter(|c| c.app_id.as_deref() == Some(ev.app_id.as_str()))
                 .filter(|c| {
-                    c.at >= s.start - Duration::seconds(5)
-                        && s.end.is_none_or(|e| c.at <= e + Duration::seconds(90))
+                    c.at >= s.start - crate::clock::secs(5)
+                        && s.end.is_none_or(|e| c.at <= e + crate::clock::secs(90))
                 })
-                .map(|c| (c.at - s.start).num_seconds().max(0))
+                .map(|c| crate::clock::between(s.start, c.at).as_secs().max(0))
                 .min();
             Start {
                 session: s,
@@ -138,15 +143,131 @@ fn starts<'a>(ev: &'a Evidence) -> Vec<Start<'a>> {
         .collect()
 }
 
+/// How a start relates to the CachyPlay fix being tested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixUse {
+    /// CachyPlay started the game, so it added the fix (or it's not a CachyPlay fix).
+    Used,
+    /// CachyPlay was off, but the fix was in Steam's own launch options: it counts too.
+    InSteam,
+    /// CachyPlay knows it was off for this start and the fix wasn't in Steam: doesn't count.
+    NotUsed,
+}
+
+/// CachyPlay's launch record for a start, if it started it.
+fn launch_for<'a>(ev: &'a Evidence, s: &Session) -> Option<&'a crate::wrapper::LaunchRecord> {
+    ev.launches.iter().find(|l| {
+        l.app_id == ev.app_id
+            && crate::clock::wall(&l.started_at)
+                .is_some_and(|d| crate::clock::between(s.start, d).as_secs().abs() <= 10)
+    })
+}
+
+/// Whether the fix being tested was used for this start. A Proton switch lives in Steam and always
+/// counts. Without any CachyPlay launch record for the game, CachyPlay can't tell, and the start
+/// counts as before.
+fn fix_use(ev: &Evidence, s: &Session, fixes: &[&crate::fixes::Fix]) -> FixUse {
+    if fixes.is_empty()
+        || launch_for(ev, s).is_some()
+        || !ev.launches.iter().any(|l| l.app_id == ev.app_id)
+    {
+        return FixUse::Used;
+    }
+    let there = |fix: &crate::fixes::Fix| {
+        fix.env
+            .iter()
+            .all(|(k, v)| s.settings.iter().any(|x| x == &format!("{k}={v}")))
+            && fix
+                .args
+                .iter()
+                .all(|a| s.args.iter().any(|x| same_option(a, x)))
+    };
+    if fixes.iter().all(|f| there(f)) {
+        FixUse::InSteam
+    } else {
+        FixUse::NotUsed
+    }
+}
+
+/// Spellings games accept for the same graphics mode count as the same option, so `-dx12` typed
+/// in Steam matches CachyPlay's `-force-d3d12`.
+pub fn same_option(a: &str, b: &str) -> bool {
+    const SAME: &[&[&str]] = &[
+        &["-force-d3d12", "-dx12", "-d3d12", "-force-dx12"],
+        &["-force-d3d11", "-dx11", "-d3d11", "-force-dx11"],
+        &["-force-vulkan", "-vulkan", "-vk"],
+    ];
+    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
+    a == b
+        || SAME
+            .iter()
+            .any(|g| g.contains(&a.as_str()) && g.contains(&b.as_str()))
+}
+
+/// A fix's name for the game list: "Start in Direct3D 12" → "Direct3D 12".
+pub fn fix_short(label: &str) -> String {
+    let l = label
+        .trim_start_matches("Start in ")
+        .trim_start_matches("Switch to ")
+        .trim_start_matches("Turn on ");
+    if label.starts_with("Your settings") {
+        "your own settings".into()
+    } else {
+        l.to_string()
+    }
+}
+
+/// Every fix CachyPlay adds when the game starts (settings or game options), while a change is
+/// being tested. Empty for a Proton switch on its own: that lives in Steam and always counts.
+fn tested_fixes(ev: &Evidence, testing: bool) -> Vec<&crate::fixes::Fix> {
+    if !testing {
+        return vec![];
+    }
+    ev.fixes
+        .fixes
+        .iter()
+        .filter(|f| !f.temporary && (!f.env.is_empty() || !f.args.is_empty()))
+        .collect()
+}
+
+/// A plain name for something typed into Steam's launch options: `-dx12` is "Start in Direct3D 12".
+pub fn option_name(opt: &str) -> String {
+    for (probe, name) in [
+        ("-force-d3d12", "Start in Direct3D 12"),
+        ("-force-d3d11", "Start in Direct3D 11"),
+        ("-force-vulkan", "Start in Vulkan"),
+    ] {
+        if same_option(probe, opt) {
+            return name.into();
+        }
+    }
+    opt.to_string()
+}
+
+/// Launch options a start had that an earlier (bad) start didn't.
+fn new_options(now: &Session, before: &Session) -> Vec<String> {
+    let args = now
+        .args
+        .iter()
+        .filter(|a| !before.args.iter().any(|b| same_option(a, b)));
+    let settings = now.settings.iter().filter(|x| !before.settings.contains(x));
+    args.chain(settings).cloned().collect()
+}
+
+fn has_options(s: &Session, opts: &[String]) -> bool {
+    opts.iter()
+        .all(|o| s.args.iter().any(|a| same_option(a, o)) || s.settings.contains(o))
+}
+
 fn mins(secs: i64) -> String {
-    history::duration_text(Duration::seconds(secs))
+    history::duration_text(crate::clock::secs(secs))
 }
 
 /// The clean-run length for this game, and the longest recent crash time it's based on.
-pub fn clean_length(ev: &Evidence, now: NaiveDateTime) -> (i64, Option<(i64, i64)>) {
+pub fn clean_length(ev: &Evidence, now: DateTime) -> (i64, Option<(i64, i64)>) {
     let times: Vec<i64> = starts(ev)
         .iter()
-        .filter(|s| s.session.start > now - Duration::days(LOOKBACK_DAYS))
+        .filter(|s| s.session.start > now - crate::clock::days(LOOKBACK_DAYS))
         .filter_map(|s| {
             s.crash_after
                 .or_else(|| s.bad().then(|| s.secs()).flatten())
@@ -159,13 +280,9 @@ pub fn clean_length(ev: &Evidence, now: NaiveDateTime) -> (i64, Option<(i64, i64
 }
 
 /// The newest change being tested: (label, when).
-fn change(ev: &Evidence) -> Option<(String, NaiveDateTime)> {
-    let parse = |s: &str| {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|d| d.naive_local())
-    };
-    let mut best: Option<(String, NaiveDateTime)> = ev
+fn change(ev: &Evidence) -> Option<(String, DateTime)> {
+    let parse = |s: &str| crate::clock::wall(s);
+    let mut best: Option<(String, DateTime)> = ev
         .fixes
         .fixes
         .iter()
@@ -182,20 +299,16 @@ fn change(ev: &Evidence) -> Option<(String, NaiveDateTime)> {
 
 /// Every change made between the last start before the newest change and now. More than one means
 /// CachyPlay can't tell which one helped.
-fn changes_together(ev: &Evidence, newest: NaiveDateTime) -> Vec<String> {
-    let parse = |s: &str| {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|d| d.naive_local())
-    };
+fn changes_together(ev: &Evidence, newest: DateTime) -> Vec<String> {
+    let parse = |s: &str| crate::clock::wall(s);
     let since = ev
         .sessions
         .iter()
         .filter(|s| s.app_id == ev.app_id && s.start < newest)
         .map(|s| s.start)
         .max();
-    let after = |t: NaiveDateTime| since.is_none_or(|s| t > s);
-    let mut v: Vec<(NaiveDateTime, String)> = ev
+    let after = |t: DateTime| since.is_none_or(|s| t > s);
+    let mut v: Vec<(DateTime, String)> = ev
         .fixes
         .fixes
         .iter()
@@ -212,7 +325,7 @@ fn changes_together(ev: &Evidence, newest: NaiveDateTime) -> Vec<String> {
     v.into_iter().map(|x| x.1).collect()
 }
 
-pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
+pub fn progress(ev: &Evidence, now: DateTime) -> Progress {
     let all = starts(ev);
     let (needed, range) = clean_length(ev, now);
     let needed_text = match range {
@@ -232,15 +345,20 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
     let online_only = ev.notes.online_only;
     let counts_mode = |s: &Start| !online_only || s.note.and_then(|n| n.online) == Some(true);
     let changed = change(ev);
+    let fixes = tested_fixes(ev, changed.is_some());
     let after: Vec<&Start> = all
         .iter()
         .filter(|s| changed.as_ref().is_none_or(|c| s.session.start > c.1))
+        .filter(|s| fix_use(ev, s.session, &fixes) != FixUse::NotUsed)
         .collect();
     let playing = all
         .iter()
         .rev()
-        .find(|s| s.session.end.is_none() && now - s.session.start < Duration::hours(12))
-        .map(|s| (now - s.session.start).num_seconds().max(0));
+        .find(|s| {
+            s.session.end.is_none()
+                && crate::clock::between(s.session.start, now) < crate::clock::hours(12)
+        })
+        .map(|s| crate::clock::between(s.session.start, now).as_secs().max(0));
     let ended_after: Vec<&&Start> = after.iter().filter(|s| s.session.end.is_some()).collect();
     let clean: Vec<&&&Start> = ended_after
         .iter()
@@ -260,7 +378,7 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
         })
         .flatten()
         .map(|s| crate::notes::key(s.session.start));
-    let day = |t: NaiveDateTime| t.format("%b %-d").to_string();
+    let day = |t: DateTime| t.strftime("%b %-d").to_string();
     let mut p = Progress {
         stage: Stage::Unknown,
         light: Light::Grey,
@@ -275,6 +393,7 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
         playing_secs: playing,
         online_only,
         ask_online,
+        steam_fix: None,
     };
     let set = |p: &mut Progress, stage, light, headline: String, detail: Option<String>| {
         p.stage = stage;
@@ -326,7 +445,7 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
             set(
                 &mut p,
                 Stage::WorksWithFix,
-                Light::Yellow,
+                Light::Green,
                 format!("Works with a fix: {label}"),
                 Some("You confirmed it works.".into()),
             );
@@ -343,7 +462,7 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
             set(
                 &mut p,
                 Stage::WorksWithFix,
-                Light::Yellow,
+                Light::Green,
                 format!("Works with a fix: {label}"),
                 Some(format!(
                     "{} since {} ({} in all).",
@@ -422,8 +541,69 @@ pub fn progress(ev: &Evidence, now: NaiveDateTime) -> Progress {
         if last_bad.is_some() {
             p.detail = Some(format!("{} so far; {}.", mins(secs), p.needed_text));
         }
-    } else if let Some(b) = last_bad.filter(|b| *b > now - Duration::days(LOOKBACK_DAYS)) {
-        if clean_since_bad > 0 {
+    } else if let Some(b) = last_bad.filter(|b| *b > now - crate::clock::days(LOOKBACK_DAYS)) {
+        // It crashed, then launch options were added in Steam, and it has run clean with them:
+        // that's a fix too, whoever typed it.
+        let bad_start = all.iter().rev().find(|s| s.bad());
+        let qualifies = |s: &&Start| {
+            s.session.start > b
+                && s.session.end.is_some()
+                && !s.bad()
+                && counts_mode(s)
+                && s.secs().unwrap_or(0) >= needed.min(history::PLAYED)
+        };
+        let opts = all
+            .iter()
+            .rev()
+            .find(|s| qualifies(s))
+            .zip(bad_start)
+            .map(|(good, bad)| new_options(good.session, bad.session))
+            .unwrap_or_default();
+        let with_opts: Vec<&Start> = all
+            .iter()
+            .filter(|s| qualifies(s) && has_options(s.session, &opts))
+            .collect();
+        if !opts.is_empty() && !with_opts.is_empty() {
+            let label = opts
+                .iter()
+                .map(|o| option_name(o))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let typed = opts.join(" ");
+            let secs: i64 = with_opts.iter().filter_map(|s| s.secs()).sum();
+            p.fix_label = Some(label.clone());
+            p.steam_fix = Some(typed.clone());
+            p.changed_at = with_opts
+                .first()
+                .map(|s| s.session.start - crate::clock::secs(1));
+            p.clean_runs = with_opts.len();
+            p.clean_secs = secs;
+            let n = history_count(with_opts.len(), "clean run");
+            if with_opts.len() >= RUNS_FOR_WORKS || (with_opts.len() >= 2 && secs >= 3600) {
+                set(
+                    &mut p,
+                    Stage::WorksWithFix,
+                    Light::Green,
+                    format!("Works with a fix: {label}"),
+                    Some(format!(
+                        "{n} with {typed} in Steam's launch options since the last problem on {}.",
+                        day(b)
+                    )),
+                );
+            } else {
+                set(
+                    &mut p,
+                    Stage::SeemsToWork,
+                    Light::Yellow,
+                    format!("Seems to work: {label}"),
+                    Some(format!(
+                        "{n} with {typed} in Steam's launch options since the last problem on {}. {} more to be sure.",
+                        day(b),
+                        history_count(RUNS_FOR_WORKS.saturating_sub(with_opts.len()), "clean run")
+                    )),
+                );
+            }
+        } else if clean_since_bad > 0 {
             set(
                 &mut p,
                 Stage::RunsFine,
@@ -485,31 +665,32 @@ fn history_count(n: usize, what: &str) -> String {
 
 /// The game's starts, newest first, with dividers for fixes, Proton switches, driver and game
 /// updates at the moment they happened.
-pub fn timeline(ev: &Evidence, now: NaiveDateTime, limit: usize) -> Vec<Item> {
+pub fn timeline(ev: &Evidence, now: DateTime, limit: usize) -> Vec<Item> {
     let p = progress(ev, now);
     let all = starts(ev);
     let changed_at = p.changed_at;
+    let fixes = tested_fixes(ev, changed_at.is_some() && p.steam_fix.is_none());
     let mut clean_n = 0;
-    let mut rows: Vec<(NaiveDateTime, Item)> = Vec::new();
+    let mut rows: Vec<(DateTime, Item)> = Vec::new();
     for s in &all {
         let st = s.session.start;
         let secs = s.secs();
-        let launch = ev.launches.iter().find(|l| {
-            chrono::DateTime::parse_from_rfc3339(&l.started_at)
-                .map(|d| (d.naive_local() - st).num_seconds().abs() <= 10)
-                .unwrap_or(false)
-        });
+        let launch = launch_for(ev, s.session);
         let (outcome, text) = match (s.outcome, secs, s.crash_after) {
             (Outcome::Crashed, _, Some(c)) => {
                 ("crash", format!("Graphics crash after {}", mins(c)))
             }
             (Outcome::Crashed, _, None) => ("crash", "Graphics crash".into()),
             (Outcome::Running, _, _)
-                if s.session.end.is_none() && now - st < Duration::hours(12) =>
+                if s.session.end.is_none()
+                    && crate::clock::between(st, now) < crate::clock::hours(12) =>
             {
                 (
                     "running",
-                    format!("Playing now · {}", mins((now - st).num_seconds())),
+                    format!(
+                        "Playing now · {}",
+                        mins(crate::clock::between(st, now).as_secs())
+                    ),
                 )
             }
             (_, Some(x), _) if x < 15 => (
@@ -524,7 +705,14 @@ pub fn timeline(ev: &Evidence, now: NaiveDateTime, limit: usize) -> Vec<Item> {
             _ => ("ok", "No end time in Steam's log".into()),
         };
         let after_change = changed_at.is_some_and(|c| st > c);
-        let counts = if !after_change || s.session.end.is_none() || s.bad() {
+        let used = if after_change {
+            fix_use(ev, s.session, &fixes)
+        } else {
+            FixUse::Used
+        };
+        let counts = if after_change && used == FixUse::NotUsed && s.session.end.is_some() {
+            Some("CachyPlay was off, so the fix wasn't used: doesn't count".to_string())
+        } else if !after_change || s.session.end.is_none() || s.bad() {
             None
         } else if p.online_only && s.note.and_then(|n| n.online) == Some(false) {
             Some("offline, doesn't count for this problem".to_string())
@@ -532,7 +720,11 @@ pub fn timeline(ev: &Evidence, now: NaiveDateTime, limit: usize) -> Vec<Item> {
             && (!p.online_only || s.note.and_then(|n| n.online) == Some(true))
         {
             clean_n += 1;
-            Some(format!("✓ clean run {clean_n} of {RUNS_FOR_WORKS}"))
+            Some(if used == FixUse::InSteam {
+                format!("✓ clean run {clean_n} of {RUNS_FOR_WORKS} (CachyPlay off, fix in Steam: counts too)")
+            } else {
+                format!("✓ clean run {clean_n} of {RUNS_FOR_WORKS}")
+            })
         } else if p.online_only && s.note.and_then(|n| n.online).is_none() {
             Some("was it online? answer to count it".into())
         } else {
@@ -555,6 +747,7 @@ pub fn timeline(ev: &Evidence, now: NaiveDateTime, limit: usize) -> Vec<Item> {
                 tool: s.session.tool.clone(),
                 applied: launch.map(|l| l.applied.clone()).unwrap_or_default(),
                 through_cachyplay: launch.is_some(),
+                fix_in_steam: used == FixUse::InSteam,
                 gpu: launch.and_then(|l| l.gpu.clone()),
                 gpu_integrated: launch.is_some_and(|l| l.gpu_integrated == Some(true)),
                 counts,
@@ -565,12 +758,8 @@ pub fn timeline(ev: &Evidence, now: NaiveDateTime, limit: usize) -> Vec<Item> {
         ));
     }
     let first = all.first().map(|s| s.session.start);
-    let mut events: Vec<(NaiveDateTime, &'static str, String)> = Vec::new();
-    let parse = |s: &str| {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|d| d.naive_local())
-    };
+    let mut events: Vec<(DateTime, &'static str, String)> = Vec::new();
+    let parse = |s: &str| crate::clock::wall(s);
     // On and off, from the record of tries (undone changes included).
     for t in &ev.tries.tries {
         let what = if t.id.starts_with("proton:") {
@@ -676,17 +865,18 @@ mod tests {
     use crate::crashmatch::{CrashEvent, GpuFault};
     use crate::fixes::{Fix, GameFixes};
 
-    fn t(s: &str) -> NaiveDateTime {
-        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
+    fn t(s: &str) -> DateTime {
+        crate::clock::parse(s, "%Y-%m-%d %H:%M:%S").unwrap()
     }
     fn session(start: &str, mins: i64) -> Session {
         Session {
             app_id: "1".into(),
             start: t(start),
-            end: Some(t(start) + Duration::minutes(mins)),
+            end: Some(t(start) + crate::clock::mins(mins)),
             source: "Steam",
             tool: Some("proton-cachyos".into()),
             settings: vec![],
+            args: vec![],
         }
     }
     fn crash(at: &str) -> CrashEvent {
@@ -724,7 +914,7 @@ mod tests {
             fixes: vec![Fix {
                 id: "d3d12".into(),
                 label: "Start in Direct3D 12".into(),
-                applied_at: format!("{}-08:00", t(at).format("%Y-%m-%dT%H:%M:%S")),
+                applied_at: format!("{}-08:00", t(at).strftime("%Y-%m-%dT%H:%M:%S")),
                 ..Default::default()
             }],
         };
@@ -791,10 +981,149 @@ mod tests {
         let p = progress(&ev, t(NOW));
         assert_eq!(p.stage, Stage::WorksWithFix);
         assert_eq!(p.headline, "Works with a fix: Start in Direct3D 12");
+        assert_eq!(
+            p.light,
+            Light::Green,
+            "working with a fix is green, not amber"
+        );
+        assert_eq!(fix_short(&p.fix_label.clone().unwrap()), "Direct3D 12");
         // A new crash after the fix: not working again.
         ev.sessions.push(session("2026-11-26 10:00:00", 8));
         ev.events.push(crash("2026-11-26 10:07:00"));
         assert_eq!(progress(&ev, t(NOW)).stage, Stage::NotWorking);
+    }
+
+    #[test]
+    fn cachyplay_off_starts_count_only_when_the_fix_is_in_steam() {
+        // Moon Sweepers: CachyPlay applies -force-d3d12. CachyPlay has started the game before.
+        let mut ev = with_fix(halo(), "2026-11-25 19:00:00");
+        ev.fixes.fixes[0].args = vec!["-force-d3d12".into()];
+        let launch = |at: &str| crate::wrapper::LaunchRecord {
+            app_id: "1".into(),
+            started_at: format!("{}-08:00", t(at).strftime("%Y-%m-%dT%H:%M:%S")),
+            ..Default::default()
+        };
+        ev.launches = vec![launch("2026-11-25 18:00:00")];
+        // Three long runs with CachyPlay off and nothing in Steam: the fix wasn't used.
+        for at in [
+            "2026-11-25 20:00:00",
+            "2026-11-25 21:00:00",
+            "2026-11-25 22:00:00",
+        ] {
+            ev.sessions.push(session(at, 30));
+        }
+        let p = progress(&ev, t(NOW));
+        assert_eq!(p.stage, Stage::Testing, "{p:?}");
+        assert_eq!(p.clean_runs, 0);
+        let rows = timeline(&ev, t(NOW), 20);
+        assert!(rows.iter().any(|r| matches!(r, Item::Run(x) if x.counts.as_deref() == Some("CachyPlay was off, so the fix wasn't used: doesn't count"))));
+        // A crash with CachyPlay off and no fix doesn't count against the fix either.
+        ev.sessions.push(session("2026-11-25 23:00:00", 8));
+        ev.events.push(crash("2026-11-25 23:07:00"));
+        assert_eq!(progress(&ev, t(NOW)).stage, Stage::Testing);
+        // With -dx12 typed in Steam they count, even though CachyPlay's spelling differs.
+        for s in ev
+            .sessions
+            .iter_mut()
+            .filter(|s| s.start > t("2026-11-25 19:30:00") && s.start < t("2026-11-25 22:30:00"))
+        {
+            s.args = vec!["-dx12".into()];
+        }
+        let p = progress(&ev, t(NOW));
+        assert_eq!(p.stage, Stage::WorksWithFix, "{p:?}");
+        let rows = timeline(&ev, t(NOW), 20);
+        assert!(rows.iter().any(|r| matches!(r, Item::Run(x) if x.fix_in_steam && x.counts.as_deref().is_some_and(|c| c.contains("counts too")))));
+        // Starts through CachyPlay always count.
+        let mut ev2 = with_fix(halo(), "2026-11-25 19:00:00");
+        ev2.fixes.fixes[0].args = vec!["-force-d3d12".into()];
+        for at in [
+            "2026-11-25 20:00:00",
+            "2026-11-25 21:00:00",
+            "2026-11-25 22:00:00",
+        ] {
+            ev2.sessions.push(session(at, 30));
+            ev2.launches.push(launch(at));
+        }
+        assert_eq!(progress(&ev2, t(NOW)).stage, Stage::WorksWithFix);
+    }
+
+    #[test]
+    fn a_fix_typed_into_steam_counts_as_a_fix() {
+        // Crashed, then -dx12 was typed into Steam's launch options; CachyPlay applied nothing.
+        let mut ev = halo();
+        for at in ["2026-11-25 20:00:00", "2026-11-25 21:00:00"] {
+            let mut s = session(at, 20);
+            s.args = vec!["-dx12".into()];
+            ev.sessions.push(s);
+        }
+        let p = progress(&ev, t(NOW));
+        assert_eq!(p.stage, Stage::SeemsToWork, "{p:?}");
+        assert_eq!(p.headline, "Seems to work: Start in Direct3D 12");
+        assert_eq!(p.steam_fix.as_deref(), Some("-dx12"));
+        let mut s = session("2026-11-25 22:00:00", 30);
+        s.args = vec!["-dx12".into()];
+        ev.sessions.push(s);
+        let p = progress(&ev, t(NOW));
+        assert_eq!(p.stage, Stage::WorksWithFix, "{p:?}");
+        assert_eq!(p.light, Light::Green);
+        assert_eq!(p.headline, "Works with a fix: Start in Direct3D 12");
+        assert_eq!(p.clean_runs, 3);
+        // Clean runs with the same options as the crashes are still just "Runs fine again".
+        let mut plain = halo();
+        plain.sessions.push(session("2026-11-25 20:00:00", 30));
+        let p = progress(&plain, t(NOW));
+        assert_eq!(p.headline, "Runs fine again");
+        assert!(p.steam_fix.is_none());
+        assert_eq!(option_name("-force-vulkan"), "Start in Vulkan");
+        assert_eq!(option_name("PROTON_USE_WINED3D=1"), "PROTON_USE_WINED3D=1");
+    }
+
+    #[test]
+    fn every_launch_time_fix_must_be_in_steam_to_count() {
+        let mut ev = with_fix(halo(), "2026-11-25 19:00:00");
+        ev.fixes.fixes[0].args = vec!["-force-d3d12".into()];
+        let mut second = ev.fixes.fixes[0].clone();
+        second.id = "other".into();
+        second.label = "Other setting".into();
+        second.args = vec![];
+        second.env = [("DXVK_ASYNC".to_string(), "1".to_string())]
+            .into_iter()
+            .collect();
+        second.applied_at = "2026-11-25T18:00:00-08:00".into();
+        ev.fixes.fixes.push(second);
+        ev.launches = vec![crate::wrapper::LaunchRecord {
+            app_id: "1".into(),
+            started_at: "2026-11-25T17:00:00-08:00".into(),
+            ..Default::default()
+        }];
+        for at in [
+            "2026-11-25 20:00:00",
+            "2026-11-25 21:00:00",
+            "2026-11-25 22:00:00",
+        ] {
+            let mut s = session(at, 30);
+            s.args = vec!["-dx12".into()];
+            ev.sessions.push(s);
+        }
+        assert_eq!(
+            progress(&ev, t(NOW)).clean_runs,
+            0,
+            "only one of the two fixes is in Steam"
+        );
+        for s in ev.sessions.iter_mut() {
+            if !s.args.is_empty() {
+                s.settings = vec!["DXVK_ASYNC=1".into()];
+            }
+        }
+        assert_eq!(progress(&ev, t(NOW)).stage, Stage::WorksWithFix);
+    }
+
+    #[test]
+    fn same_option_spellings() {
+        assert!(same_option("-force-d3d12", "-dx12"));
+        assert!(same_option("-force-d3d12", "-force-d3d12"));
+        assert!(!same_option("-force-d3d12", "-dx11"));
+        assert!(!same_option("-force-vulkan", "-dx12"));
     }
 
     #[test]

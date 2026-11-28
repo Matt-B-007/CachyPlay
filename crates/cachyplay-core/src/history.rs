@@ -4,8 +4,8 @@
 //! questions a person asks first: "when did it stop working?", "what changed?", "did switching
 //! Proton help?", and "do other games still run?".
 
+use crate::clock::{DateTime, SignedDuration as Duration};
 use crate::crashmatch::{CrashEvent, Session};
-use chrono::{Duration, NaiveDateTime};
 use serde::Serialize;
 
 /// A session this long without a crash counts as "the game worked".
@@ -38,23 +38,23 @@ pub fn outcome(s: &Session, crashes: &[&CrashEvent]) -> Outcome {
     let end = s.end;
     let crashed = crashes.iter().any(|c| {
         c.app_id.as_deref() == Some(s.app_id.as_str())
-            && c.at >= s.start - Duration::seconds(5)
-            && end.is_none_or(|e| c.at <= e + Duration::seconds(90))
+            && c.at >= s.start - crate::clock::secs(5)
+            && end.is_none_or(|e| c.at <= e + crate::clock::secs(90))
     });
     if crashed {
         return Outcome::Crashed;
     }
     match s.duration() {
         None => Outcome::Running,
-        Some(d) if d.num_seconds() >= PLAYED => Outcome::Played,
-        Some(d) if d.num_seconds() < SHORT => Outcome::Short,
+        Some(d) if d.as_secs() >= PLAYED => Outcome::Played,
+        Some(d) if d.as_secs() < SHORT => Outcome::Short,
         Some(_) => Outcome::Ok,
     }
 }
 
 /// "2 h 23 min", "4 min", "55 s".
 pub fn duration_text(d: Duration) -> String {
-    let s = d.num_seconds().max(0);
+    let s = d.as_secs().max(0);
     if s < 90 {
         format!("{s} s")
     } else if s < 3600 {
@@ -94,7 +94,7 @@ pub struct Trouble<'a> {
 }
 
 impl Trouble<'_> {
-    pub fn first_bad(&self) -> NaiveDateTime {
+    pub fn first_bad(&self) -> DateTime {
         self.since[0].session.start
     }
     pub fn bad_count(&self) -> usize {
@@ -151,7 +151,7 @@ pub fn trouble<'a>(runs: &'a [Run<'a>]) -> Option<Trouble<'a>> {
 pub fn others_ran_fine<'a>(
     sessions: &'a [Session],
     app_id: &str,
-    t: NaiveDateTime,
+    t: DateTime,
     min: Duration,
     crashes: &[&CrashEvent],
 ) -> Vec<&'a Session> {
@@ -174,7 +174,7 @@ mod tests {
         format!("[{t}] Game process {kind} : AppID {app} \"~/.local/share/Steam/steamrt64/reaper SteamLaunch AppId={app} -- '~/.local/share/Steam/steamapps/common/SteamLinuxRuntime_4'/_v2-entry-point --verb=waitforexitandrun -- '{tool}'/proton waitforexitandrun  '/games/x.exe'\", ProcID 1\n")
     }
 
-    fn crash(t: NaiveDateTime, app: &str) -> CrashEvent {
+    fn crash(t: DateTime, app: &str) -> CrashEvent {
         CrashEvent {
             at: t,
             app_id: Some(app.into()),
@@ -245,7 +245,7 @@ mod tests {
             &sessions,
             "5335510",
             t.first_bad(),
-            Duration::minutes(60),
+            crate::clock::mins(60),
             &refs,
         );
         assert_eq!(fine.len(), 1);

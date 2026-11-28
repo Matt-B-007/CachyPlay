@@ -4,10 +4,10 @@
 //! that crashed, black-screened or was undone because it made things worse stays ruled out for that
 //! game (and only that game) until the player chooses "Try again".
 
+use crate::clock::DateTime;
 use crate::manage::{read_json, write_json};
 use crate::paths::Paths;
 use anyhow::Result;
-use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -29,15 +29,13 @@ pub struct Try {
 }
 
 impl Try {
-    fn time(s: &str) -> Option<NaiveDateTime> {
-        chrono::DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|d| d.naive_local())
+    fn time(s: &str) -> Option<DateTime> {
+        crate::clock::wall(s)
     }
-    pub fn on(&self) -> Option<NaiveDateTime> {
+    pub fn on(&self) -> Option<DateTime> {
         Self::time(&self.on_at)
     }
-    pub fn off(&self) -> Option<NaiveDateTime> {
+    pub fn off(&self) -> Option<DateTime> {
         self.off_at.as_deref().and_then(Self::time)
     }
 }
@@ -94,7 +92,7 @@ pub fn record_on(paths: &Paths, app_id: &str, id: &str, label: &str) -> Result<(
     t.tries.push(Try {
         id: id.into(),
         label: label.into(),
-        on_at: chrono::Local::now().to_rfc3339(),
+        on_at: crate::clock::now_rfc3339(),
         off_at: None,
         off_reason: None,
         ruled_out: None,
@@ -111,7 +109,7 @@ pub fn record_off(paths: &Paths, app_id: &str, id: &str, reason: Option<&str>) -
         .rev()
         .find(|x| x.id == id && x.off_at.is_none())
     {
-        x.off_at = Some(chrono::Local::now().to_rfc3339());
+        x.off_at = Some(crate::clock::now_rfc3339());
         x.off_reason = reason.map(str::to_string);
         if x.ruled_out.is_none() {
             x.ruled_out = match reason {
@@ -134,7 +132,7 @@ pub fn rule_out(paths: &Paths, app_id: &str, id: &str, label: &str, why: &str) -
         None => t.tries.push(Try {
             id: id.into(),
             label: label.into(),
-            on_at: chrono::Local::now().to_rfc3339(),
+            on_at: crate::clock::now_rfc3339(),
             off_at: None,
             off_reason: Some("auto".into()),
             ruled_out: Some(why.into()),

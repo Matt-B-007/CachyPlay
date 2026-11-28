@@ -30,11 +30,11 @@ pub fn developer_report(ev: &Evidence, driver: Option<&str>, gpu: Option<&str>) 
             .since
             .iter()
             .filter_map(|r| r.session.duration())
-            .map(|d| d.num_seconds())
+            .map(|d| d.as_secs())
             .min();
         lines.push(format!(
             "Every start since {} fails ({} starts{}).",
-            t.first_bad().format("%b %-d"),
+            t.first_bad().strftime("%b %-d"),
             t.since.len(),
             quick
                 .map(|s| format!(", the quickest after {s} seconds"))
@@ -43,7 +43,7 @@ pub fn developer_report(ev: &Evidence, driver: Option<&str>, gpu: Option<&str>) 
         if let Some(g) = t.last_good {
             lines.push(format!(
                 "It ran fine on {}.",
-                g.session.start.format("%b %-d")
+                g.session.start.strftime("%b %-d")
             ));
         }
     }
@@ -72,7 +72,7 @@ pub fn developer_report(ev: &Evidence, driver: Option<&str>, gpu: Option<&str>) 
     if let Some(u) = &ev.unity {
         if let Some(g) = &u.graphics {
             lines.push(format!(
-                "Graphics mode: {g}{}{}.",
+                "Graphics mode in the game's last log: {g}{}{}.",
                 if u.forced {
                     " (forced by the game)"
                 } else {
@@ -114,7 +114,7 @@ pub fn developer_report(ev: &Evidence, driver: Option<&str>, gpu: Option<&str>) 
             format!(
                 "{} ({})",
                 w.name,
-                history::duration_text(chrono::Duration::minutes(w.minutes))
+                history::duration_text(crate::clock::mins(w.minutes))
             )
         })
         .collect();

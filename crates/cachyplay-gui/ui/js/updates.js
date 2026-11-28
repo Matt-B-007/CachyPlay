@@ -17,6 +17,8 @@ async function checkUpdates(silent) {
     state.update = { error: String(e) };
   }
   renderUpdate();
+  // Library shows the update state too.
+  if (!state.selected && state.overview && $("settings").hidden) renderHome();
 }
 
 function renderUpdate() {
@@ -145,15 +147,20 @@ function notesView(md) {
     const bullet = line.match(/^[-*]\s+(.*)/);
     if (bullet) {
       if (!list) out.push((list = h("ul")));
-      list.append(h("li", {}, bullet[1].replace(/\*\*/g, "")));
+      list.append(h("li", {}, ...proseWithCode(bullet[1].replace(/\*\*/g, ""))));
       continue;
     }
     list = null;
     if (!line) continue;
     const head = line.match(/^#{1,6}\s+(.*)/);
-    out.push(head ? h("h4", {}, head[1]) : h("p", {}, line.replace(/\*\*/g, "")));
+    out.push(head ? h("h4", {}, head[1]) : h("p", {}, ...proseWithCode(line.replace(/\*\*/g, ""))));
   }
   return out;
+}
+
+/* `-dx12` in notes becomes a code word that never splits after its hyphen. */
+function proseWithCode(text) {
+  return text.split(/`([^`]+)`/).map((part, i) => (i % 2 ? h("code", { class: "tok" }, part) : part));
 }
 
 async function updateNow() {

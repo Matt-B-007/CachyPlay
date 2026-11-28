@@ -59,13 +59,13 @@ pub struct RunNotes {
 }
 
 impl RunNotes {
-    pub fn get(&self, start: chrono::NaiveDateTime) -> Option<&RunNote> {
+    pub fn get(&self, start: crate::clock::DateTime) -> Option<&RunNote> {
         self.notes.get(&key(start))
     }
 }
 
-pub fn key(start: chrono::NaiveDateTime) -> String {
-    start.format("%Y-%m-%dT%H:%M:%S").to_string()
+pub fn key(start: crate::clock::DateTime) -> String {
+    start.strftime("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
 fn file(paths: &Paths, app_id: &str) -> PathBuf {

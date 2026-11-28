@@ -43,7 +43,7 @@ pub fn backup(src: &Path, dir: &Path, keep: usize) -> Result<PathBuf> {
         .context("no file name")?
         .to_string_lossy()
         .into_owned();
-    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S%.3f");
+    let stamp = crate::clock::stamp_ms();
     let dest = dir.join(format!("{name}.{stamp}.bak"));
     fs::copy(src, &dest).with_context(|| format!("backing up {}", src.display()))?;
     let mut olds: Vec<_> = fs::read_dir(dir)?

@@ -4,6 +4,7 @@
 
 /* ---------- wiring ---------- */
 $("open-settings").addEventListener("click", () => openSettings());
+$("go-home").addEventListener("click", () => { closeSettings(); goHome(); });
 $("open-help").addEventListener("click", (e) => { e.stopPropagation(); toggleHelp(); });
 for (const b of document.querySelectorAll("[data-help]")) b.addEventListener("click", () => helpAction(b.dataset.help));
 $("help-menu").addEventListener("keydown", (e) => {
@@ -67,7 +68,11 @@ for (const a of document.querySelectorAll(".settings-nav a")) {
 }
 document.addEventListener("keydown", onKey);
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyDisplay);
-$("search").addEventListener("input", (e) => { state.query = e.target.value.trim().toLowerCase(); renderRail(); });
+$("search").addEventListener("input", (e) => {
+  state.query = e.target.value.trim().toLowerCase();
+  renderRail();
+  if (!state.selected && state.overview) renderHome();
+});
 
 // Errors in the window go into CachyPlay's log, so a bug report includes them.
 window.addEventListener("error", (e) => {

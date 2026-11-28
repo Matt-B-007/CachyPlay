@@ -21,13 +21,13 @@ use proton::*;
 pub use rules::*;
 pub use summary::*;
 
+use crate::clock::DateTime;
 use crate::crashmatch::{self, CrashEvent};
 use crate::evidence::DriverUpdate;
 use crate::fixes::{Fix, GameFixes};
 use crate::history;
 use crate::vklayers::{self, Layer};
 use crate::wrapper::LaunchRecord;
-use chrono::NaiveDateTime;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,7 +37,7 @@ pub struct Evidence {
     pub app_id: String,
     pub game_name: String,
     /// Steam's last update of the game.
-    pub game_updated: Option<NaiveDateTime>,
+    pub game_updated: Option<DateTime>,
     /// All GPU crashes (any game), newest first.
     pub events: Vec<CrashEvent>,
     /// AppID → game name, for crashes in other games.
@@ -70,11 +70,11 @@ pub struct Evidence {
     /// Other games that ran long and clean recently, and how they're set up.
     pub working: Vec<crate::insights::WorkingGame>,
     /// When CachyPlay switched the compatibility tool.
-    pub switched_at: Option<NaiveDateTime>,
+    pub switched_at: Option<DateTime>,
     /// What the player said about each start ("What happened?").
     pub notes: crate::notes::RunNotes,
     /// The time to judge "now" by (tests set it; None means the clock).
-    pub now: Option<NaiveDateTime>,
+    pub now: Option<DateTime>,
     /// Fixes that worked for other games on this PC: (game name, fix id, why they're similar).
     pub worked_elsewhere: Vec<(String, String, String)>,
     /// Every change tried for this game, including undone ones.
@@ -148,9 +148,8 @@ pub struct Suggestion {
 }
 
 impl Evidence {
-    pub fn now(&self) -> NaiveDateTime {
-        self.now
-            .unwrap_or_else(|| chrono::Local::now().naive_local())
+    pub fn now(&self) -> DateTime {
+        self.now.unwrap_or_else(crate::clock::now_local)
     }
 
     fn game_events(&self) -> Vec<&CrashEvent> {
@@ -206,19 +205,14 @@ impl Evidence {
             .iter()
             .filter(|l| l.started_at > fix.applied_at && !l.running)
             .collect();
-        let applied_at = chrono::DateTime::parse_from_rfc3339(&fix.applied_at)
-            .ok()
-            .map(|d| d.naive_local());
+        let applied_at = crate::clock::wall(&fix.applied_at);
         let crashed_since = applied_at.is_some_and(|t| self.game_events().iter().any(|e| e.at > t));
         // Starts in Steam's log count too, even when CachyPlay was off for them.
         let steam_runs: Vec<&crashmatch::Session> = self
             .sessions
             .iter()
             .filter(|s| s.app_id == self.app_id && applied_at.is_some_and(|t| s.start > t))
-            .filter(|s| {
-                s.duration()
-                    .is_some_and(|d| d.num_seconds() >= history::SHORT)
-            })
+            .filter(|s| s.duration().is_some_and(|d| d.as_secs() >= history::SHORT))
             .collect();
         // A short start without a crash proves nothing (the player may have closed it); only a
         // crash, or the player saying it went wrong, counts against the fix.

@@ -54,7 +54,7 @@ don't fail it, and are checked again whenever dependencies are updated:
 
 | Library | Warning | Comes from | What we'd do |
 |---|---|---|---|
-| chrono | unmaintained (RUSTSEC-2026-0543) | CachyPlay itself (dates and times) | Move to its successor once one is settled; a behaviour change, so its own release |
+| chrono | unmaintained (RUSTSEC-2026-0543) | Listed in Cargo.lock only, as an optional dependency of serde_with (via Tauri). Never compiled: `cargo tree -i chrono --target all` prints nothing. CachyPlay moved to jiff in beta.20 | Nothing to do; it goes when Tauri's serde_with drops it |
 | zbus_names, zvariant, zvariant_derive | unmaintained (RUSTSEC-2026-0370/0371/0372) | tauri-plugin-single-instance (via zbus 5) | Update the plugin when it moves off them |
 | glib | unsound iterator (RUSTSEC-2024-0429) | GTK 0.18, used by Tauri | Fixed when Tauri moves to newer GTK bindings; CachyPlay doesn't use that iterator |
 | proc-macro-error | unmaintained (RUSTSEC-2024-0370) | GTK 0.18 build macros, used by Tauri | Same as glib (build time only) |

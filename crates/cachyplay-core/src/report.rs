@@ -145,8 +145,8 @@ pub fn saved_reports(paths: &Paths) -> Vec<SavedReport> {
 }
 
 /// File name for a report, using the time captured at the moment of the click.
-pub fn file_name(app_id: Option<&str>, at: &chrono::DateTime<chrono::Local>) -> String {
-    let stamp = at.format("%Y-%m-%d_%H-%M-%S");
+pub fn file_name(app_id: Option<&str>, at: &jiff::ZonedDateTime) -> String {
+    let stamp = at.strftime("%Y-%m-%d_%H-%M-%S");
     match app_id {
         Some(id) => format!("cachyplay-bug-{id}-{stamp}.zip"),
         None => format!("cachyplay-bug-{stamp}.zip"),
@@ -164,8 +164,8 @@ pub fn create_with(
     game: Option<&Game>,
     note: Option<&UserNote>,
 ) -> Result<Report> {
-    let clicked = chrono::Local::now();
-    let now = clicked.naive_local();
+    let clicked = crate::clock::now();
+    let now = clicked.datetime();
     let dir = paths.report_dir();
 
     let logs = evidence::kernel_logs();
@@ -220,12 +220,12 @@ pub fn create_with(
             .lines()
             .find_map(|l| l.strip_prefix("Proton: "))
             .map(|t| t.split_whitespace().last().unwrap_or(t).to_string());
-        if let Some(st) = last_start.filter(|st| written < *st - chrono::Duration::seconds(5)) {
+        if let Some(st) = last_start.filter(|st| written < *st - crate::clock::secs(5)) {
             let n = format!(
                 "This Proton log is from an earlier start (written {}{}), not the latest start ({}).",
-                written.format("%b %-d %H:%M"),
+                written.strftime("%b %-d %H:%M"),
                 tool.as_deref().map(|t| format!(", {t}")).unwrap_or_default(),
-                st.format("%b %-d %H:%M")
+                st.strftime("%b %-d %H:%M")
             );
             proton_note = Some(n.clone());
             Some(format!("# NOTE: {n}\n{text}"))
@@ -256,7 +256,7 @@ pub fn create_with(
     let mut s = String::new();
     s.push_str(&format!(
         "# CachyPlay bug report\n\nCreated: {}\nCachyPlay: {}\n\n",
-        clicked.format("%Y-%m-%d %H:%M:%S"),
+        clicked.strftime("%Y-%m-%d %H:%M:%S"),
         crate::VERSION
     ));
     match game {
@@ -268,15 +268,13 @@ pub fn create_with(
                 );
             }
             s.push('\n');
-            if let Some(ts) = g
-                .last_updated
-                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
-            {
-                let local = ts.with_timezone(&chrono::Local);
-                let days = (clicked - local).num_days();
+            if let Some(ts) = g.last_updated.and_then(crate::clock::from_unix) {
+                let local = ts;
+                let days =
+                    crate::clock::whole_days(clicked.timestamp().duration_since(local.timestamp()));
                 s.push_str(&format!(
                     "- Game last updated by Steam: {} ({} day{} before this report), build {}\n",
-                    local.format("%Y-%m-%d %H:%M"),
+                    local.strftime("%Y-%m-%d %H:%M"),
                     days,
                     if days == 1 { "" } else { "s" },
                     g.build_id
@@ -295,24 +293,24 @@ pub fn create_with(
                 ) {
                     s.push_str(&format!(
                         "- Proton switched by CachyPlay to {tool} on {} (Undo puts the previous one back)\n",
-                        at.format("%Y-%m-%d %H:%M")
+                        at.strftime("%Y-%m-%d %H:%M")
                     ));
                 }
             }
             match launches.first() {
                 Some(l) if l.running => {
                     // CachyPlay's record wasn't finished; Steam's log may know how it ended.
-                    let at = chrono::DateTime::parse_from_rfc3339(&l.started_at).ok().map(|d| d.naive_local());
+                    let at = crate::clock::wall(&l.started_at);
                     let steam_end = at.and_then(|t| {
                         sessions_all
                             .iter()
-                            .find(|x| x.app_id == g.app_id && (x.start - t).num_seconds().abs() <= 15)
-                            .and_then(|x| x.end.map(|e| (e - x.start).num_seconds()))
+                            .find(|x| x.app_id == g.app_id && crate::clock::between(t, x.start).as_secs().abs() <= 15)
+                            .and_then(|x| x.end.map(|e| crate::clock::between(x.start, e).as_secs()))
                     });
                     s.push_str(&match steam_end {
                         Some(secs) => format!(
                             "- Last start through CachyPlay: {}, ran {secs}s (from Steam's log; CachyPlay's own record of it wasn't finished)\n",
-                            at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| l.started_at.clone())
+                            at.map(|t| t.strftime("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| l.started_at.clone())
                         ),
                         None => format!(
                             "- CachyPlay is on. The last start began at {} and is still running, or hung (for example after a GPU crash).\n",
@@ -321,18 +319,18 @@ pub fn create_with(
                     });
                 }
                 Some(l) => {
-                    let at = chrono::DateTime::parse_from_rfc3339(&l.started_at).ok().map(|d| d.naive_local());
+                    let at = crate::clock::wall(&l.started_at);
                     let newer = at
                         .map(|t| {
                             sessions_all
                                 .iter()
-                                .filter(|x| x.app_id == g.app_id && x.start > t + chrono::Duration::seconds(10))
+                                .filter(|x| x.app_id == g.app_id && x.start > t + crate::clock::secs(10))
                                 .count()
                         })
                         .unwrap_or(0);
                     s.push_str(&format!(
                         "- Last start through CachyPlay: {}, ran {:.0}s, {}{}{}\n",
-                        at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| l.started_at.clone()),
+                        at.map(|t| t.strftime("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| l.started_at.clone()),
                         l.runtime_secs,
                         match (l.exit_code, l.signal) {
                             (Some(c), _) => format!("exit code {c}"),
@@ -368,15 +366,23 @@ pub fn create_with(
                 if let Some(d) = &p.detail {
                     s.push_str(&format!(" {d}"));
                 }
-                s.push_str(&format!(
-                    "\n- A clean run is {}{}.\n",
-                    p.needed_text,
-                    if p.online_only {
-                        ", online (the problem only happens online)"
-                    } else {
-                        ""
-                    }
-                ));
+                // The line above often says what a clean run is already.
+                if p.detail
+                    .as_deref()
+                    .is_some_and(|d| d.contains(&p.needed_text))
+                {
+                    s.push('\n');
+                } else {
+                    s.push_str(&format!(
+                        "\n- A clean run is {}{}.\n",
+                        p.needed_text,
+                        if p.online_only {
+                            ", online (the problem only happens online)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
                 if let Some(t) = driver_timeline(&ev) {
                     s.push_str(&format!("- {t}\n"));
                 }
@@ -421,7 +427,10 @@ pub fn create_with(
                                 ));
                             }
                             crate::progress::Item::Event { at, text, .. } => {
-                                s.push_str(&format!("  - — {}: {text}\n", at.replace('T', " ")));
+                                s.push_str(&format!(
+                                    "- {}: (change) {text}\n",
+                                    at.replace('T', " ")
+                                ));
                             }
                         }
                     }
@@ -448,7 +457,7 @@ pub fn create_with(
         };
         s.push_str(&format!(
             "- **{}: {}**\n",
-            e.at.format("%Y-%m-%d %H:%M:%S"),
+            e.at.strftime("%Y-%m-%d %H:%M:%S"),
             who
         ));
         for f in &e.faults {
@@ -456,7 +465,7 @@ pub fn create_with(
                 Some(x) => format!("NVIDIA Xid {x}: {}", crashmatch::xid_meaning(x)),
                 None => format!("{} GPU fault", f.vendor.to_uppercase()),
             };
-            let offset = (f.at - e.at).num_seconds();
+            let offset = crate::clock::between(e.at, f.at).as_secs();
             let when = if offset > 0 {
                 format!(" (+{offset}s)")
             } else {
@@ -508,7 +517,7 @@ pub fn create_with(
                     samples.first().is_some_and(|f| *t >= f.at)
                         && samples
                             .last()
-                            .is_some_and(|l| *t <= l.at + chrono::Duration::seconds(10))
+                            .is_some_and(|l| *t <= l.at + crate::clock::secs(10))
                 });
             if let Some(d) = crate::gpulog::describe(&samples, crash) {
                 s.push_str(&format!(
@@ -636,7 +645,7 @@ pub fn create_with(
         Some((title, rest)) if title.starts_with("# ") => format!("{title}\n\n{top}\n{rest}"),
         _ => format!("{top}\n{s}"),
     };
-    files.push(("00-summary.md".into(), s));
+    files.push(("00-summary.md".into(), crate::possessives(&s)));
 
     files.push((
         "01-system.json".into(),
@@ -652,7 +661,7 @@ pub fn create_with(
                 "name": g.name,
                 "picked_automatically": auto_game.is_some(),
                 "build_id": g.build_id,
-                "last_updated": g.last_updated.and_then(|t| chrono::DateTime::from_timestamp(t, 0)).map(|t| t.with_timezone(&chrono::Local).to_rfc3339()),
+                "last_updated": g.last_updated.and_then(crate::clock::from_unix).map(|t| crate::clock::rfc3339(&t)),
                 "compat_tool": ctx.steam.compat_tool(&g.app_id),
                 "has_proton_prefix": ctx.steam.compatdata(g).is_some(),
                 "install_dir": g.install_dir,
@@ -853,8 +862,8 @@ pub fn driver_timeline(ev: &crate::advice::Evidence) -> Option<String> {
     {
         return None;
     }
-    let gap = c.first_crash - u.at;
-    let when = match gap.num_hours() {
+    let gap = crate::clock::between(u.at, c.first_crash);
+    let when = match gap.as_hours() {
         h if h < 24 => format!("{h} hour{}", if h == 1 { "" } else { "s" }),
         h if h < 48 => "1 day".to_string(),
         h => format!("{} days", h / 24),
@@ -865,13 +874,13 @@ pub fn driver_timeline(ev: &crate::advice::Evidence) -> Option<String> {
         u.package,
         u.from,
         u.to,
-        u.at.format("%b %-d"),
+        u.at.strftime("%b %-d"),
         if u.package.starts_with("linux") { ", the kernel's NVIDIA module" } else { "" }
     );
     if let Some(v) = c.version_change.filter(|v| !std::ptr::eq(*v, u)) {
         line.push_str(&format!(
             " The driver version last changed on {} ({} {} → {}).",
-            v.at.format("%b %-d"),
+            v.at.strftime("%b %-d"),
             v.package,
             v.from,
             v.to
@@ -893,7 +902,7 @@ fn general_sections(paths: &Paths, ctx: Option<&Ctx>) -> String {
         let o = crate::library::overview(paths, Ok(c));
         let light = |l: crate::advice::Light| match l {
             crate::advice::Light::Red => "Not working",
-            crate::advice::Light::Yellow => "Works with (or trying) a fix",
+            crate::advice::Light::Yellow => "Trying a fix",
             crate::advice::Light::Green => "Runs fine",
             crate::advice::Light::Grey => "Not played lately",
         };
@@ -917,7 +926,9 @@ fn general_sections(paths: &Paths, ctx: Option<&Ctx>) -> String {
                 "- **{}** (AppID {}): {}{}\n",
                 g.name,
                 g.app_id,
-                light(g.light),
+                g.stage
+                    .clone()
+                    .unwrap_or_else(|| light(g.light).to_string()),
                 if g.enabled { "; CachyPlay is on" } else { "" }
             ));
         }
@@ -955,7 +966,7 @@ fn general_sections(paths: &Paths, ctx: Option<&Ctx>) -> String {
         for u in updates.iter().rev().take(12) {
             s.push_str(&format!(
                 "- {}: {} {} → {}\n",
-                u.at.format("%b %-d %H:%M"),
+                u.at.strftime("%b %-d %H:%M"),
                 u.package,
                 u.from,
                 u.to
@@ -1231,7 +1242,7 @@ mod tests {
     #[test]
     fn driver_timeline_points_at_the_update_before_the_first_crash() {
         use crate::crashmatch::{CrashEvent, GpuFault, Session};
-        let t = |x: &str| chrono::NaiveDateTime::parse_from_str(x, "%Y-%m-%d %H:%M").unwrap();
+        let t = |x: &str| crate::clock::parse(x, "%Y-%m-%d %H:%M").unwrap();
         let ev = crate::advice::Evidence {
             app_id: "1240440".into(),
             game_name: "Halo Infinite".into(),
@@ -1253,6 +1264,7 @@ mod tests {
                 source: "Steam",
                 tool: None,
                 settings: vec![],
+                args: vec![],
             }],
             ..Default::default()
         };
@@ -1373,12 +1385,7 @@ mod tests {
 
     #[test]
     fn file_name_format() {
-        let t = chrono::NaiveDate::from_ymd_opt(2026, 11, 21)
-            .unwrap()
-            .and_hms_opt(21, 52, 4)
-            .unwrap()
-            .and_local_timezone(chrono::Local)
-            .unwrap();
+        let t = crate::clock::local(crate::clock::at(2026, 11, 21, 21, 52, 4)).unwrap();
         assert_eq!(
             file_name(Some("1240440"), &t),
             "cachyplay-bug-1240440-2026-11-21_21-52-04.zip"

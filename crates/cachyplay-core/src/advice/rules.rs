@@ -37,13 +37,13 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
     let all_crashes: Vec<&CrashEvent> = ev.events.iter().collect();
     let runs = history::runs(&ev.sessions, &ev.app_id, &all_crashes);
     let trouble = history::trouble(&runs);
-    let day = |t: NaiveDateTime| t.format("%b %-d").to_string();
-    let others_fine = |since: NaiveDateTime| -> Vec<String> {
+    let day = |t: DateTime| t.strftime("%b %-d").to_string();
+    let others_fine = |since: DateTime| -> Vec<String> {
         history::others_ran_fine(
             &ev.sessions,
             &ev.app_id,
             since,
-            chrono::Duration::minutes(60),
+            crate::clock::mins(60),
             &all_crashes,
         )
         .into_iter()
@@ -67,7 +67,10 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
     let mut update_rule = false;
     if let (Some(t), Some(up)) = (&trouble, ev.game_updated) {
         let after_good = t.last_good.is_none_or(|g| up >= g.session.start);
-        if after_good && up <= t.first_bad() && t.first_bad() - up <= chrono::Duration::days(30) {
+        if after_good
+            && up <= t.first_bad()
+            && crate::clock::between(up, t.first_bad()) <= crate::clock::days(30)
+        {
             update_rule = true;
             let mut why = Vec::new();
             if let Some(g) = t.last_good {
@@ -196,8 +199,8 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
     if several {
         let ctx = driver_context(ev);
         let mut why: Vec<String> = crash_line().into_iter().collect();
-        let fmt_gap = |from: NaiveDateTime, to: NaiveDateTime| {
-            let h = (to - from).num_hours();
+        let fmt_gap = |from: DateTime, to: DateTime| {
+            let h = crate::clock::between(from, to).as_hours();
             if h < 48 {
                 format!("{h} hour{}", if h == 1 { "" } else { "s" })
             } else {
@@ -213,7 +216,7 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
                 u.package,
                 u.from,
                 u.to,
-                u.at.format("%b %-d at %H:%M"),
+                u.at.strftime("%b %-d at %H:%M"),
                 fmt_gap(u.at, c.first_crash),
                 ev.game_name,
                 if rebuild {
@@ -225,7 +228,7 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
             if let Some(v) = c.version_change.filter(|v| !std::ptr::eq(*v, u)) {
                 why.push(format!(
                     "The driver itself last changed on {} ({} {} → {}).",
-                    v.at.format("%b %-d"),
+                    v.at.strftime("%b %-d"),
                     v.package,
                     v.from,
                     v.to
@@ -239,7 +242,7 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
                 why.push(format!(
                     "No driver update came before the crashes started; {} ({}) came after, so it isn't the cause.",
                     a.package,
-                    a.at.format("%b %-d")
+                    a.at.strftime("%b %-d")
                 ));
                 priority = 50;
             }
@@ -300,10 +303,10 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
         let first = game_events.iter().map(|e| e.at).min();
         let mut why: Vec<String> = crash_line().into_iter().collect();
         if let (Some(up), Some(first)) = (ev.game_updated, first) {
-            if up <= first && first - up <= chrono::Duration::days(30) {
+            if up <= first && crate::clock::between(up, first) <= crate::clock::days(30) {
                 why.push(format!(
                     "The game updated on {}, before these crashes.",
-                    up.format("%b %-d")
+                    up.strftime("%b %-d")
                 ));
             }
         }
@@ -540,7 +543,7 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
                     format!(
                         "{} ran {} recently without problems.",
                         w.name,
-                        history::duration_text(chrono::Duration::minutes(w.minutes))
+                        history::duration_text(crate::clock::mins(w.minutes))
                     ),
                     format!(
                         "It starts with: {}",
@@ -584,9 +587,7 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
         if f.verdict.is_some() || f.temporary {
             continue;
         }
-        let applied = chrono::DateTime::parse_from_rfc3339(&f.applied_at)
-            .ok()
-            .map(|d| d.naive_local());
+        let applied = crate::clock::wall(&f.applied_at);
         let played_since = ev
             .launches
             .iter()
@@ -622,7 +623,7 @@ pub fn suggest(ev: &Evidence) -> Vec<Suggestion> {
             let when = t
                 .off()
                 .or(t.on())
-                .map(|d| d.format("%b %-d").to_string())
+                .map(|d| d.strftime("%b %-d").to_string())
                 .unwrap_or_default();
             let why = format!(
                 "Ruled out for this game ({when}): {}",

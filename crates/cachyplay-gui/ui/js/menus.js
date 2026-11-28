@@ -108,7 +108,11 @@ function paletteItems() {
   for (const [id, label, words] of SETTING_SECTIONS) {
     items.push({ kind: "Settings", label, words: `settings ${label} ${words}`, run: () => openSettings(id) });
   }
+  const home = state.detail && state.detail.fix_home;
   const actions = [
+    ["Library", "home all games overview", () => { closeSettings(); goHome(); }],
+    ...(state.selected && home && !home.in_steam && isWorking(state.selected)
+      ? [[`Keep this fix in Steam (${game.name})`, "launch options without cachyplay", () => { closeSettings(); keepInSteam(state.selected, true); }]] : []),
     ["Report a problem", "bug report send", () => openReport({ appId: state.selected })],
     ["Check for updates", "update new version", () => { openSettings("set-updates"); checkUpdates(false); }],
     ["Run the PC check", "problems", () => { openSettings("set-pc"); runPcCheck(); }],
@@ -135,10 +139,31 @@ function openPalette() {
   $("palette-input").focus();
 }
 
+/* Matches in order: the name typed exactly, then names that start with it, then names with a word
+   that starts with it, then everything else that matches. Within each, games, fixes, settings and
+   actions keep their usual order. So "report" puts "Report a problem" first even when a game's name
+   contains the word. */
+function rankPalette(items, query) {
+  const q = query.trim().toLowerCase();
+  const words = q.split(/\s+/).filter(Boolean);
+  const score = (it) => {
+    const l = it.label.toLowerCase();
+    if (!q) return 3;
+    if (l === q) return 0;
+    if (l.startsWith(q)) return 1;
+    if (l.split(/[^a-z0-9]+/).some((w) => w.startsWith(words[0]))) return 2;
+    return 3;
+  };
+  return items
+    .map((it, i) => ({ it, i }))
+    .filter(({ it }) => words.every((w) => it.words.toLowerCase().includes(w)))
+    .sort((a, b) => score(a.it) - score(b.it) || a.i - b.i)
+    .map(({ it }) => it);
+}
+
 function renderPalette() {
   const p = state.palette;
-  const words = $("palette-input").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  p.shown = p.items.filter((it) => words.every((w) => it.words.toLowerCase().includes(w))).slice(0, 12);
+  p.shown = rankPalette(p.items, $("palette-input").value).slice(0, 12);
   p.index = Math.min(p.index, Math.max(0, p.shown.length - 1));
   const list = $("palette-list");
   if (!p.shown.length) {
@@ -171,18 +196,25 @@ function paletteKeys(e) {
 
 /* ---------- first-run tour (new installs only; replay from Help) ---------- */
 const TOUR = [
-  ["#rail", "Your games", "Every installed Steam game, with a traffic light: green runs fine, yellow works with a fix (or one is being tested), red isn't working, grey not played lately. Games that need you are at the top."],
-  [".hero-text", "What happened", "For the game you pick: what happened, why (and how sure CachyPlay is), and what to do next, in three lines."],
-  [".hero-actions", "Fix it", "When there's a one-click fix, Fix it applies it. Everything CachyPlay changes can be undone, and it asks whether it worked after you play."],
+  ["#rail", "Your games", "Grouped as Needs you, Testing a fix and Working. Green runs fine (with or without a fix), amber is testing a fix, red isn't working, grey not played lately. Library at the top shows everything at a glance."],
+  [".switch-card", "The CachyPlay switch", "Turns CachyPlay on or off for this game. It's the one place to do that, and turning it off puts Steam's launch options back."],
+  [".brief", "What happened, why, what to do", "For the game you pick: what happened, why, and the next step, with one main button. When a game works with a fix, this shows where the fix lives and can keep it in Steam."],
   ['#tab-fixes', "The Fixes tab", "Every suggestion, ruled-out tries, and what's applied right now with an Undo button for each."],
   ["#open-settings", "Settings", "Updates, the PC check, appearance and privacy. Help (?) has bug reports, shortcuts and this tour. Press Ctrl+K any time to search everything."],
 ];
 state.tourStep = -1;
 
-function startTour() {
+async function startTour() {
   closeMenus();
   closeSettings();
   for (const d of document.querySelectorAll("dialog[open]")) d.close();
+  // Steps 2 to 4 point at a game's page, so the tour opens one (the window starts on Library).
+  const games = (state.overview && state.overview.games) || [];
+  if (!state.selected && games.length) {
+    const pick = games.find(needsAttention) || games.find((g) => g.enabled) || games[0];
+    state.tab = "overview";
+    await showGame(pick.app_id);
+  }
   state.tourStep = 0;
   showTourStep();
 }

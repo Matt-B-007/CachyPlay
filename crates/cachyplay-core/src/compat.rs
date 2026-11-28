@@ -149,7 +149,7 @@ pub fn switch(ctx: &Ctx, app_id: &str, tool: &Tool) -> Result<()> {
         at: None,
     });
     rec.set = tool.name.clone();
-    rec.at = Some(chrono::Local::now().to_rfc3339());
+    rec.at = Some(crate::clock::now_rfc3339());
     write_json(&p, &rec)?;
     let _ = crate::tries::record_on(
         &ctx.paths,
@@ -166,11 +166,9 @@ pub fn switched_to(ctx: &Ctx, app_id: &str) -> Option<String> {
 }
 
 /// When CachyPlay switched the tool (wall-clock time), if it recorded it.
-pub fn switched_at(ctx: &Ctx, app_id: &str) -> Option<chrono::NaiveDateTime> {
+pub fn switched_at(ctx: &Ctx, app_id: &str) -> Option<crate::clock::DateTime> {
     let r: UndoRecord = read_json(&undo_path(ctx, app_id))?;
-    chrono::DateTime::parse_from_rfc3339(r.at.as_deref()?)
-        .ok()
-        .map(|d| d.naive_local())
+    crate::clock::wall(r.at.as_deref()?)
 }
 
 /// Put the game back on the tool it used before CachyPlay changed it.

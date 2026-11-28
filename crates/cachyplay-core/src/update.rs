@@ -557,10 +557,7 @@ fn check_with(paths: &Paths, force: bool) -> UpdateStatus {
     status.last_checked = fs::metadata(paths.state.join("releases.json"))
         .and_then(|m| m.modified())
         .ok()
-        .map(|t| {
-            chrono::DateTime::<chrono::Local>::from(t)
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
-        });
+        .and_then(crate::clock::system_rfc3339_secs);
     status
 }
 

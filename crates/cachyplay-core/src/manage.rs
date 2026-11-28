@@ -291,6 +291,26 @@ impl Ctx {
         Ok(Outcome::Kept)
     }
 
+    /// Put back launch options and CachyPlay's records for a game exactly as they were (Undo for
+    /// "Keep this fix in Steam").
+    pub(crate) fn restore_managed(
+        &self,
+        app_id: &str,
+        launch_options: &str,
+        snap: Option<&Snapshot>,
+        log: Option<&ChangeLog>,
+    ) -> Result<()> {
+        self.require_editable()?;
+        self.write_launch_options(app_id, launch_options)?;
+        if let Some(s) = snap {
+            write_json(&self.snapshot_path(app_id), s)?;
+        }
+        if let Some(l) = log {
+            write_json(&self.changes_path(app_id), l)?;
+        }
+        Ok(())
+    }
+
     fn forget(&self, app_id: &str) {
         let _ = fs::remove_file(self.changes_path(app_id));
         let _ = fs::remove_file(self.snapshot_path(app_id));
@@ -408,7 +428,7 @@ fn walk(dir: &Path, depth: usize, f: &mut dyn FnMut(&Path)) {
 }
 
 pub fn now() -> String {
-    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+    crate::clock::now_rfc3339_secs()
 }
 
 pub fn read_json<T: for<'de> Deserialize<'de>>(p: &Path) -> Option<T> {

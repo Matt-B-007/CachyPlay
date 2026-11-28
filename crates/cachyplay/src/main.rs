@@ -547,7 +547,13 @@ fn real_main(args: Vec<OsString>) -> Result<ExitCode> {
                 .with_context(|| format!("game {app_id} is not installed"))?;
             if undo {
                 cachyplay_core::prefix::undo(&c, &g)?;
-                println!("Put {}'s earlier Windows files back.", g.name);
+                println!(
+                    "{}",
+                    cachyplay_core::possessives(&format!(
+                        "Put {}'s earlier Windows files back.",
+                        g.name
+                    ))
+                );
             } else {
                 let kept = cachyplay_core::prefix::reset(&c, &g)?;
                 println!("Set {}'s Windows files aside at {}. Steam makes fresh ones on the next start; `cachyplay reset-prefix {app_id} --undo` puts them back.", g.name, kept.display());

@@ -2,12 +2,12 @@
 //! Collecting the facts that bug reports and fix suggestions are built on: kernel GPU errors,
 //! which game was running when, recent driver upgrades. Shared by the app, reports and the CLI.
 
+use crate::clock::DateTime;
 use crate::crashmatch::{self, CrashEvent};
 use crate::manage::Ctx;
 use crate::paths::Paths;
 use crate::sys::capture;
 use crate::wrapper::LaunchRecord;
-use chrono::NaiveDateTime;
 use std::fs;
 use std::time::Duration;
 
@@ -80,7 +80,7 @@ pub fn crash_events(
     paths: &Paths,
     ctx: Option<&Ctx>,
     logs: &KernelLogs,
-    now: NaiveDateTime,
+    now: DateTime,
 ) -> Vec<CrashEvent> {
     let mut faults = Vec::new();
     for t in [logs.previous_boot.as_deref(), logs.this_boot.as_deref()]
@@ -103,7 +103,7 @@ pub fn crash_events(
 pub fn proton_log(
     paths: &Paths,
     app_id: &str,
-) -> Option<(std::path::PathBuf, chrono::NaiveDateTime)> {
+) -> Option<(std::path::PathBuf, crate::clock::DateTime)> {
     let name = format!("steam-{app_id}.log");
     [
         paths.state.join("proton-logs").join(&name),
@@ -112,7 +112,7 @@ pub fn proton_log(
     .into_iter()
     .filter_map(|p| {
         let t = fs::metadata(&p).and_then(|m| m.modified()).ok()?;
-        let t = chrono::DateTime::<chrono::Local>::from(t).naive_local();
+        let t = crate::clock::from_system(t)?;
         Some((p, t))
     })
     .max_by_key(|x| x.1)
@@ -131,12 +131,12 @@ fn crash_history(paths: &Paths) -> std::path::PathBuf {
 fn remember_faults(
     paths: &Paths,
     mut faults: Vec<crashmatch::GpuFault>,
-    now: NaiveDateTime,
+    now: DateTime,
 ) -> Vec<crashmatch::GpuFault> {
     let file = crash_history(paths);
     let saved = fs::read_to_string(&file).unwrap_or_default();
     faults.extend(crashmatch::parse_kernel_faults(&saved, now));
-    faults.retain(|f| now - f.at <= chrono::Duration::days(CRASH_HISTORY_DAYS));
+    faults.retain(|f| crate::clock::between(f.at, now) <= crate::clock::days(CRASH_HISTORY_DAYS));
     faults.sort_by_key(|f| f.at);
     faults.dedup_by(|a, b| a.line == b.line);
     let text: String = faults.iter().map(|f| format!("{}\n", f.line)).collect();
@@ -152,7 +152,7 @@ pub fn all_launches(paths: &Paths) -> Vec<LaunchRecord> {
         .map(|rd| {
             rd.flatten()
                 .filter_map(|e| crate::manage::read_json::<LaunchRecord>(&e.path()))
-                .map(|r| r.settle(chrono::Local::now()))
+                .map(|r| r.settle(crate::clock::now_instant()))
                 .collect()
         })
         .unwrap_or_default();
@@ -162,7 +162,7 @@ pub fn all_launches(paths: &Paths) -> Vec<LaunchRecord> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DriverUpdate {
-    pub at: NaiveDateTime,
+    pub at: DateTime,
     pub package: String,
     pub from: String,
     pub to: String,
@@ -189,10 +189,8 @@ pub fn driver_updates(pacman_log: &str) -> Vec<DriverUpdate> {
                 .trim_start_matches('(')
                 .trim_end_matches(')')
                 .split_once(" -> ")?;
-            let at = chrono::DateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S%z")
-                .map(|d| d.naive_local())
-                .or_else(|_| NaiveDateTime::parse_from_str(stamp, "%Y-%m-%d %H:%M"))
-                .ok()?;
+            let at = crate::clock::wall_numeric_offset(stamp)
+                .or_else(|| crate::clock::parse(stamp, "%Y-%m-%d %H:%M"))?;
             Some(DriverUpdate {
                 at,
                 package: pkg.to_string(),
@@ -229,10 +227,7 @@ mod tests {
     fn crashes_survive_restarts() {
         let tmp = tempfile::tempdir().unwrap();
         let p = Paths::isolated(tmp.path());
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 25)
-            .unwrap()
-            .and_hms_opt(9, 0, 0)
-            .unwrap();
+        let now = crate::clock::at(2026, 11, 25, 9, 0, 0);
         let line = "2026-11-24T13:52:01-08:00 host kernel: NVRM: Xid (PCI:0000:02:00): 109, pid=395739, name=Unity Main Thre, channel 0x1e, errorString CTX SWITCH TIMEOUT";
         let old = "2026-10-01T10:00:00-08:00 host kernel: NVRM: Xid (PCI:0000:02:00): 31, pid=1, name=x, channel 0x1";
         // Seen once in the kernel log...

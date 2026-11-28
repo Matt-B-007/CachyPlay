@@ -58,7 +58,7 @@ pub(crate) fn crashed_on(ev: &Evidence) -> Vec<(String, usize)> {
 pub(crate) fn compat_suggestion(
     ev: &Evidence,
     trouble: Option<&history::Trouble>,
-    day: &dyn Fn(NaiveDateTime) -> String,
+    day: &dyn Fn(DateTime) -> String,
 ) -> Option<Suggestion> {
     let tried = trouble.map(|t| t.tools_tried()).unwrap_or_default();
     let crashed = crashed_on(ev);

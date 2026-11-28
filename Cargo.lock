@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "cachyplay"
-version = "0.1.0-beta.19"
+version = "0.1.0-beta.21"
 dependencies = [
  "anyhow",
  "cachyplay-core",
@@ -436,10 +436,10 @@ dependencies = [
 
 [[package]]
 name = "cachyplay-core"
-version = "0.1.0-beta.19"
+version = "0.1.0-beta.21"
 dependencies = [
  "anyhow",
- "chrono",
+ "jiff 1.0.2",
  "minisign-verify",
  "regex",
  "semver",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "cachyplay-gui"
-version = "0.1.0-beta.19"
+version = "0.1.0-beta.21"
 dependencies = [
  "cachyplay-core",
  "serde",

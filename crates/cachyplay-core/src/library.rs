@@ -80,6 +80,49 @@ pub struct Overview {
     pub games: Vec<GameSummary>,
     /// Set when GPU driver crashes hit several different programs (a driver or system problem).
     pub system_crashes: Option<SystemCrashes>,
+    /// Graphics, driver and kernel, for the top bar and the home page.
+    pub system: SystemInfo,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct SystemInfo {
+    /// "NVIDIA graphics card"
+    pub gpu: Option<String>,
+    /// "NVIDIA 620.73" (only NVIDIA's driver has a version CachyPlay can read without running anything).
+    pub driver: Option<String>,
+    /// "7.3.6-3" (the kernel's own version, without the "-cachyos" name)
+    pub kernel: Option<String>,
+    /// "CachyOS"
+    pub distro: Option<String>,
+}
+
+/// What this PC runs, read from system files (no programs are started).
+pub fn system_info(root: &crate::pccheck::Root) -> SystemInfo {
+    let gpus = crate::gpus::list(root);
+    let main = gpus.iter().find(|g| !g.integrated).or(gpus.first());
+    let kernel = root.read("/proc/sys/kernel/osrelease").map(|k| {
+        k.trim()
+            .split('-')
+            .take_while(|part| {
+                part.starts_with(|c: char| c.is_ascii_digit()) || part.starts_with("rc")
+            })
+            .collect::<Vec<_>>()
+            .join("-")
+    });
+    SystemInfo {
+        gpu: main.map(|g| g.describe().trim_start_matches("the ").to_string()),
+        driver: root
+            .read("/sys/module/nvidia/version")
+            .map(|v| format!("NVIDIA {}", v.trim()))
+            .filter(|v| v.len() > "NVIDIA ".len()),
+        kernel: kernel.filter(|k| !k.is_empty()),
+        distro: root.read("/etc/os-release").and_then(|t| {
+            t.lines().find_map(|l| {
+                l.strip_prefix("NAME=")
+                    .map(|v| v.trim_matches('"').to_string())
+            })
+        }),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,6 +188,8 @@ pub struct GameDetail {
     pub graphics_card: Option<CardInfo>,
     /// "Try these settings" for this game, as typed.
     pub your_settings: Option<String>,
+    /// Where the game's fix lives: added by CachyPlay, and/or in Steam's own launch options.
+    pub fix_home: Option<crate::keep::FixHome>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,7 +223,7 @@ pub fn steam_info(ctx: &Ctx) -> SteamInfo {
         Some(why)
     } else if running {
         Some(
-            "Steam is open, so turning CachyPlay on or off, switching Proton and resetting Windows files wait until it closes. Fixes and your settings work right away. If Steam's window is closed, it may still be running in the system tray: right-click its tray icon → Exit."
+            "Steam is open, so turning CachyPlay on or off, switching Proton, keeping a fix in Steam and resetting Windows files wait until it closes. Fixes and your settings work right away. If Steam's window is closed, it may still be running in the system tray: right-click its tray icon → Exit."
                 .into(),
         )
     } else {
@@ -274,11 +319,11 @@ fn describe_crash(e: &crate::crashmatch::CrashEvent) -> String {
     }
 }
 
-fn crash_when(at: chrono::NaiveDateTime) -> String {
+fn crash_when(at: crate::clock::DateTime) -> String {
     if at.date() == crate::crashmatch::now_local().date() {
-        at.format("%H:%M").to_string()
+        at.strftime("%H:%M").to_string()
     } else {
-        at.format("%b %-d %H:%M").to_string()
+        at.strftime("%b %-d %H:%M").to_string()
     }
 }
 
@@ -290,9 +335,14 @@ pub fn summary_with(ctx: &Ctx, game: &Game, gpu_crashes: usize) -> GameSummary {
     let status = ctx.status(game).ok();
     let recipe = find_recipe(&ctx.paths, &game.app_id);
     let enabled = status.as_ref().is_some_and(|s| s.applied);
-    let user_tweaks = status
-        .as_ref()
-        .is_some_and(|s| !s.user_options.trim().is_empty() || !s.tweaks.is_empty());
+    // A fix CachyPlay itself wrote into Steam ("Keep this fix in Steam") isn't the player's tweak.
+    let kept = crate::keep::kept_in_steam(&ctx.paths, &game.app_id);
+    let user_tweaks = status.as_ref().is_some_and(|s| {
+        let own_is_kept = kept
+            .as_ref()
+            .is_some_and(|k| k.after.trim() == s.user_options.trim());
+        (!s.user_options.trim().is_empty() && !own_is_kept) || !s.tweaks.is_empty()
+    });
     let last_failed = enabled
         && recent_launches(&ctx.paths, &game.app_id, 1)
             .first()
@@ -343,7 +393,7 @@ fn set_lights(ctx: &Ctx, games: &mut [GameSummary], events: &[CrashEvent]) {
     use crate::advice::Light;
     use crate::progress::Stage;
     let sessions = crate::crashmatch::parse_steam_sessions(&ctx.steam.console_logs());
-    let now = chrono::Local::now().naive_local();
+    let now = crate::clock::now_local();
     for g in games.iter_mut() {
         let ev = crate::advice::Evidence {
             app_id: g.app_id.clone(),
@@ -357,18 +407,21 @@ fn set_lights(ctx: &Ctx, games: &mut [GameSummary], events: &[CrashEvent]) {
             ..Default::default()
         };
         let p = crate::progress::progress(&ev, now);
-        g.stage = Some(
-            match p.stage {
-                Stage::NotWorking => "Not working",
-                Stage::Testing if p.playing_secs.is_some() => "Playing now",
-                Stage::Testing => "Testing a fix",
-                Stage::SeemsToWork => "Seems to work",
-                Stage::WorksWithFix => "Works with a fix",
-                Stage::RunsFine => "Runs fine",
-                Stage::Unknown => "",
-            }
-            .to_string(),
-        )
+        g.stage = Some(match p.stage {
+            Stage::NotWorking => "Not working".to_string(),
+            Stage::Testing if p.playing_secs.is_some() => "Playing now".into(),
+            Stage::Testing => "Testing a fix".into(),
+            Stage::SeemsToWork => "Seems to work".into(),
+            // "Works with a fix: Direct3D 12": the fix is named, so it's clear what keeps it working.
+            Stage::WorksWithFix => match p.fix_label.as_deref() {
+                Some(l) if !l.contains(" changes at once") => {
+                    format!("Works with a fix: {}", crate::progress::fix_short(l))
+                }
+                _ => "Works with a fix".into(),
+            },
+            Stage::RunsFine => "Runs fine".into(),
+            Stage::Unknown => String::new(),
+        })
         .filter(|x| !x.is_empty());
         if p.stage != Stage::Unknown || g.light != Light::Red {
             g.light = p.light;
@@ -398,6 +451,7 @@ pub fn overview(paths: &Paths, ctx: Result<&Ctx, String>) -> Overview {
                     games
                 },
                 system_crashes: system_crashes(ctx, &events),
+                system: system_info(&crate::pccheck::Root::system()),
             }
         }
         Err(e) => Overview {
@@ -407,6 +461,7 @@ pub fn overview(paths: &Paths, ctx: Result<&Ctx, String>) -> Overview {
             steam_error: Some(e),
             games: vec![],
             system_crashes: None,
+            system: system_info(&crate::pccheck::Root::system()),
         },
     }
 }
@@ -522,7 +577,7 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
             why: if f.temporary {
                 "A fix you applied from a suggestion. Temporary: undo it once you've saved a bug report.".into()
             } else {
-                "A fix you applied from a suggestion. Undo it any time under Suggested fixes.".into()
+                "A fix you applied from a suggestion. Undo it any time on the Fixes tab.".into()
             },
             status: "fix".into(),
         });
@@ -598,6 +653,12 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
         .collect();
     let crashes = crash_list.len();
     let keepable = crate::keep::settings_for(ctx, game, facts);
+    let fix_home = crate::keep::fix_home(
+        ctx,
+        game,
+        &keepable,
+        sys::which("game-performance").is_some(),
+    );
     let standalone_launch_options = (!keepable.is_empty()).then(|| {
         let current = ctx
             .launch_options(&game.app_id)
@@ -626,6 +687,7 @@ pub fn detail(ctx: &Ctx, game: &Game, facts: &Facts) -> GameDetail {
             .into_iter()
             .find(|f| f.id == crate::fixes::YOUR_SETTINGS)
             .map(|f| f.label.trim_start_matches("Your settings: ").to_string()),
+        fix_home,
         edited_since: status.as_ref().is_some_and(|s| s.edited_since),
         tweaks: status.map(|s| s.tweaks).unwrap_or_default(),
         fix: recipe.as_ref().map(|r| FixInfo {
@@ -838,5 +900,34 @@ mod tests {
         fs::create_dir_all(new.parent().unwrap()).unwrap();
         fs::write(&new, b"x").unwrap();
         assert_eq!(cover_art(&root, "1240440"), Some(new));
+    }
+
+    #[test]
+    fn system_info_from_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let w = |p: &str, t: &str| {
+            let f = tmp.path().join(p);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(f, t).unwrap();
+        };
+        w("proc/sys/kernel/osrelease", "7.3.6-3-cachyos\n");
+        w("sys/module/nvidia/version", "620.73\n");
+        w(
+            "etc/os-release",
+            "NAME=\"CachyOS Linux\"\nPRETTY_NAME=\"CachyOS\"\n",
+        );
+        let i = system_info(&crate::pccheck::Root(tmp.path().to_path_buf()));
+        assert_eq!(i.kernel.as_deref(), Some("7.3.6-3"));
+        w("proc/sys/kernel/osrelease", "7.4.0-rc3-1-cachyos-rc\n");
+        assert_eq!(
+            system_info(&crate::pccheck::Root(tmp.path().to_path_buf()))
+                .kernel
+                .as_deref(),
+            Some("7.4.0-rc3-1")
+        );
+        assert_eq!(i.driver.as_deref(), Some("NVIDIA 620.73"));
+        assert_eq!(i.distro.as_deref(), Some("CachyOS Linux"));
+        let none = system_info(&crate::pccheck::Root(tmp.path().join("nothing")));
+        assert_eq!(none, SystemInfo::default());
     }
 }

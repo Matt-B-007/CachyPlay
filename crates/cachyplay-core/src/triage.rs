@@ -34,12 +34,12 @@ pub struct FindCause {
     pub summary: String,
 }
 
-fn day(t: chrono::NaiveDateTime) -> String {
-    t.format("%b %-d %H:%M").to_string()
+fn day(t: crate::clock::DateTime) -> String {
+    t.strftime("%b %-d %H:%M").to_string()
 }
 
 /// Settings tried by editing Steam's launch options: (settings, start, crashed?, seconds).
-fn steam_tries(ev: &Evidence) -> Vec<(Vec<String>, chrono::NaiveDateTime, bool, i64)> {
+fn steam_tries(ev: &Evidence) -> Vec<(Vec<String>, crate::clock::DateTime, bool, i64)> {
     let crashes: Vec<_> = ev.events.iter().collect();
     history::runs(&ev.sessions, &ev.app_id, &crashes)
         .into_iter()
@@ -53,7 +53,7 @@ fn steam_tries(ev: &Evidence) -> Vec<(Vec<String>, chrono::NaiveDateTime, bool, 
                 r.session.settings.clone(),
                 r.session.start,
                 r.outcome == Outcome::Crashed || note_bad,
-                r.session.duration().map(|d| d.num_seconds()).unwrap_or(0),
+                r.session.duration().map(|d| d.as_secs()).unwrap_or(0),
             )
         })
         .collect()
@@ -98,7 +98,7 @@ pub fn mark_steam_tries(ev: &Evidence, out: &mut [Suggestion]) {
             s.why.push(format!(
                 "You tried this in Steam's launch options ({}): it ran {} without a crash.",
                 day(*at),
-                history::duration_text(chrono::Duration::seconds(*secs))
+                history::duration_text(crate::clock::secs(*secs))
             ));
         }
     }
@@ -603,8 +603,8 @@ mod tests {
     use super::*;
     use crate::crashmatch::{CrashEvent, GpuFault, Session};
 
-    fn t(x: &str) -> chrono::NaiveDateTime {
-        chrono::NaiveDateTime::parse_from_str(x, "%Y-%m-%d %H:%M").unwrap()
+    fn t(x: &str) -> crate::clock::DateTime {
+        crate::clock::parse(x, "%Y-%m-%d %H:%M").unwrap()
     }
     fn halo_day() -> Evidence {
         let s = |start: &str, end: &str, tool: &str, set: &[&str]| Session {
@@ -614,6 +614,7 @@ mod tests {
             source: "Steam",
             tool: Some(tool.into()),
             settings: set.iter().map(|x| x.to_string()).collect(),
+            args: vec![],
         };
         let c = |at: &str| CrashEvent {
             at: t(at),

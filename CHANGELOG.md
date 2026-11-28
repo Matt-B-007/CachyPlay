@@ -25,9 +25,36 @@ Ctrl+K search, keyboard shortcuts, first-run tour, standard update/report/uninst
 optional tray icon), v0.1.0-beta.18 (fixes from testing beta.17: no empty band at the top, the
 new icon shows in KDE, clearer Steam status, better Proton and driver advice), v0.1.0-beta.19
 (a tidy-up with no behaviour changes: smaller code files, the GPL-3.0-or-later licence, licence
-checks).
+checks), v0.1.0-beta.20 (the redesign: library home, progress track, mission brief, recent starts
+chart; games that work with a fix show green and name it; Keep this fix in Steam; dates and
+times moved from chrono to jiff), v0.1.0-beta.21 (43 fixes from testing beta.20: a fix typed
+into Steam counts as a fix, big-screen and tour repairs, working games no longer look broken).
 
 ### Added
+- **A fix typed into Steam counts as a fix (beta.21)**: if a game crashed, you added something
+  like `-dx12` to its launch options in Steam, and it has run clean since, CachyPlay shows "Works
+  with a fix: Direct3D 12" and where the fix lives, even if CachyPlay never applied anything.
+- **Dismiss on the driver-crash banner (beta.21)**: hides it until something changes.
+- **Library and Keep this fix in Steam in Ctrl+K (beta.21)**.
+- **Library home (beta.20)**: the window opens on Library: games that need you with their next
+  step, this PC at a glance (graphics, system, PC check, CachyPlay), and every game as a tile.
+  Click **CachyPlay** at the top left or **Library** in the game list to come back.
+- **Progress track (beta.20)**: a game's page shows where it is: Crashed → Try a fix → Testing
+  (clean runs so far) → Works with a fix.
+- **Mission brief (beta.20)**: what happened, why and what to do, side by side, with one main
+  button.
+- **Recent starts chart (beta.20)**: one bar per start (height = minutes played, green ran fine,
+  red crashed), outlined when CachyPlay was off, with a marker for each fix or update. Click a
+  bar for that start's details.
+- **Up next and Ruled out (beta.20)**: the next suggestions with a Try button, and everything
+  already crossed off, side by side under the chart.
+- **Keep this fix in Steam (beta.20)**: for a game that works with a fix, the page shows where
+  the fix lives (added by CachyPlay, in Steam's launch options) and can write it into Steam's
+  launch options, so the game keeps working with CachyPlay off. Undo puts everything back. It
+  waits for Steam to close if Steam is open.
+- **Driver and kernel in the top bar (beta.20)**: e.g. "NVIDIA 620.73 · Kernel 7.3.6-3".
+- **Bigger big-screen mode (beta.20)**: everything 50% larger, with controller hints at the
+  bottom: A choose, B back, X Library, Y report a problem, LB/RB previous or next game.
 - **Help menu (beta.17)**: the **?** button at the top right has Report a problem, What's new,
   Keyboard shortcuts, Show the tour and About, in the same place as in the other apps.
 - **Search everything with Ctrl+K (beta.17)**: games, the open game's fixes, every Settings
@@ -240,6 +267,36 @@ checks).
   default in the app; `cachyplay uninstall --keep-settings` in the terminal.
 
 ### Changed
+- **A game that works looks like it works (beta.21)**: no "Did it help?" once clean runs have
+  answered it, the Fixes tab says "Nothing to fix right now" (other ideas are folded away), and
+  History no longer offers "Tell NVIDIA" or "Tell the developer". The header counts clean runs
+  with the fix, not old crashes. The driver-crash banner no longer counts games that work again.
+- **Games that never had a problem aren't offered fixes (beta.21)**: no Fix it button, no Up
+  next, and no number on the Fixes tab.
+- **Every launch-time fix must be in Steam for a CachyPlay-off start to count (beta.21)**, not
+  only the newest one.
+- **Undo for Keep this fix in Steam stays available after CachyPlay is switched back on
+  (beta.21)**, and the switch is disabled while another change for the game waits for Steam.
+- **Library (beta.21)**: "Needs you" and "Testing a fix" are separate sections, the search box
+  filters the tiles too, and the CachyPlay card shows the real update state.
+- **Recent starts chart (beta.21)**: every day is labelled, the whole column is clickable, the
+  legend explains every colour, and clicking a bar scrolls History to that start.
+- **Works with a fix is green, and names the fix (beta.20)**: "Works with a fix: Direct3D 12".
+  Amber now only means a fix is being tested.
+- **Game list grouped (beta.20)**: Needs you, Testing a fix, Working, Other games. Old crashes no
+  longer keep a game that now works under Needs you.
+- **Starts with CachyPlay off count only when the fix was used (beta.20)**: a start counts
+  towards testing a fix when CachyPlay started the game, or when the fix was in Steam's own
+  launch options (`-dx12` counts for CachyPlay's `-force-d3d12`). Starts with CachyPlay off and
+  without the fix no longer count either way, and their row says so.
+- **One way to turn CachyPlay on or off (beta.20)**: the switch at the top right of a game. The
+  extra "Turn on CachyPlay" and "Put CachyPlay back" buttons are gone.
+- **Ctrl+K puts an exact match first (beta.20)**: typing "report" puts Report a problem above a
+  game whose name contains the word.
+- **Dates and times use jiff instead of chrono (beta.20)**: chrono is no longer maintained
+  (RUSTSEC-2026-0543). No behaviour change: every date and time comes out as before, and saved
+  files from older versions read back the same. This was done first and checked on its own (full
+  checks, every existing test unchanged) before the rest of beta.20.
 - **Licence (beta.19)**: From this version CachyPlay is GPL-3.0-or-later; earlier releases remain
   MIT. Every source file now starts with an `SPDX-License-Identifier: GPL-3.0-or-later` line, and
   `scripts/check.sh` checks both that and, with `cargo deny`, that every dependency's licence works
@@ -323,6 +380,21 @@ checks).
   automatic dependency updates; `scripts/release-check.sh`, RELEASING.md and SUPPORT.md.
 
 ### Fixed
+- **"null" under the game's cover (beta.21)**: shown on games without a progress track.
+- **Big-screen mode (beta.21)**: the game header no longer overlaps itself, and the controller
+  hints stay at the bottom when Settings is open.
+- **First-run tour (beta.21)**: it opens a game first, so every step points at something.
+- **A fix is never added twice (beta.21)**: when it's in Steam's launch options and CachyPlay is
+  on, CachyPlay leaves its copy out (also when spelled differently, like `-dx12`).
+- **Messages show above an open dialog (beta.21)**, and an old message's Undo button goes away
+  when a newer message arrives.
+- **Smaller fixes (beta.21)**: the game list and the game's page agree on its status; launch
+  options never wrap after a hyphen; What's new shows code words properly; "Sweepers'" instead
+  of "Sweepers's"; a kept fix isn't listed as "[your tweaks]"; clearer wording on the Settings
+  tab and in bug reports; pre-release kernels show their "rc" part; times with an unusual
+  offset spelling are read exactly as before the jiff change.
+- **No more words split in the middle (beta.20)**: lists of facts and launch options only break
+  long paths, not ordinary words.
 - **Empty band at the top of the window (beta.18)**: beta.17 hid its icon set with an inline style,
   which the window's security rules ignore on some systems, leaving 150 px of empty space above the
   top bar. It's now hidden by the stylesheet and by its size, and a test stops inline styles

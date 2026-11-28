@@ -46,10 +46,10 @@ pub const STALE_RUNNING_SECS: i64 = 6 * 3600;
 
 impl LaunchRecord {
     /// Turn a launch that never recorded its end into a failed one once it's clearly over.
-    pub fn settle(mut self, now: chrono::DateTime<chrono::Local>) -> Self {
+    pub fn settle(mut self, now: jiff::Timestamp) -> Self {
         if self.running {
-            let age = chrono::DateTime::parse_from_rfc3339(&self.started_at)
-                .map(|t| (now - t.with_timezone(&chrono::Local)).num_seconds())
+            let age = crate::clock::instant(&self.started_at)
+                .map(|t| now.duration_since(t).as_secs())
                 .unwrap_or(i64::MAX);
             if age > STALE_RUNNING_SECS {
                 self.running = false;
@@ -186,7 +186,7 @@ pub fn run(paths: &Paths, command: Vec<OsString>) -> i32 {
     let mut passthrough = prep_error.is_some() || plan_is_empty(&plan);
     // Note the launch right away, so a game that hangs (and never returns here) still shows up.
     let record_path = app_id.as_ref().map(|id| {
-        let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let stamp = crate::clock::stamp();
         paths.launches().join(format!("{id}-{stamp}.json"))
     });
     if let (Some(id), Some(path)) = (&app_id, &record_path) {
@@ -433,7 +433,20 @@ fn build(command: &[OsString], plan: &Plan, passthrough: bool) -> Command {
         }
     }
     argv.extend(command.iter().cloned());
-    argv.extend(plan.extra_args.iter().map(OsString::from));
+    // A fix that's already in Steam's own launch options (even spelled differently, like -dx12
+    // for -force-d3d12) isn't added a second time.
+    let already = |a: &String| {
+        command.iter().any(|c| {
+            c.to_str()
+                .is_some_and(|c| crate::progress::same_option(c, a))
+        })
+    };
+    argv.extend(
+        plan.extra_args
+            .iter()
+            .filter(|a| !already(a))
+            .map(OsString::from),
+    );
     let mut c = Command::new(&argv[0]);
     c.args(&argv[1..]);
     for (k, v, _) in &plan.env {
@@ -461,6 +474,33 @@ pub fn recent_launches(paths: &Paths, app_id: &str, max: usize) -> Vec<LaunchRec
         .rev()
         .take(max)
         .filter_map(|p| crate::manage::read_json::<LaunchRecord>(p))
-        .map(|r| r.settle(chrono::Local::now()))
+        .map(|r| r.settle(crate::clock::now_instant()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fix_already_in_steams_options_is_not_added_twice() {
+        let plan = Plan {
+            extra_args: vec!["-force-d3d12".into(), "-nosplash".into()],
+            ..Default::default()
+        };
+        let args = |cmd: &[&str]| -> Vec<String> {
+            let command: Vec<OsString> = cmd.iter().map(OsString::from).collect();
+            build(&command, &plan, false)
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        // Typed in Steam as -dx12: CachyPlay's -force-d3d12 is left out, the rest is added.
+        assert_eq!(args(&["game.exe", "-dx12"]), ["-dx12", "-nosplash"]);
+        assert_eq!(
+            args(&["game.exe", "-force-d3d12"]),
+            ["-force-d3d12", "-nosplash"]
+        );
+        assert_eq!(args(&["game.exe"]), ["-force-d3d12", "-nosplash"]);
+    }
 }
